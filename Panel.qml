@@ -177,16 +177,21 @@ Panel {
     return elidedLabel(course.name || ("Course " + (index + 1)), 20)
   }
 
-  function assignmentUrl(assignment) {
-    if (!assignment) return ""
-    var candidate = String(assignment.html_url || "").trim()
+  function canvasItemUrl(item) {
+    if (!item) return ""
+    var candidate = String(item.html_url || "").trim()
     var origin = String(baseUrl || "").trim().replace(/\/+$/, "").toLowerCase()
     if (candidate === "" || origin === "") return ""
     return candidate.toLowerCase().indexOf(origin + "/") === 0 ? candidate : ""
   }
 
   function openAssignment(assignment) {
-    var url = assignmentUrl(assignment)
+    var url = canvasItemUrl(assignment)
+    if (url !== "") Qt.openUrlExternally(url)
+  }
+
+  function openCourse(course) {
+    var url = canvasItemUrl(course)
     if (url !== "") Qt.openUrlExternally(url)
   }
 
@@ -484,10 +489,19 @@ Panel {
                     anchors.rightMargin: Style.space(12)
                     text: modelData.name
                     textFormat: Text.PlainText
-                    color: root.foreground
+                    color: overviewCourseLink.containsMouse ? root.urgent : root.foreground
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.body
                     elide: Text.ElideRight
+
+                    MouseArea {
+                      id: overviewCourseLink
+                      anchors.fill: parent
+                      enabled: root.canvasItemUrl(modelData) !== ""
+                      hoverEnabled: enabled
+                      cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                      onClicked: root.openCourse(modelData)
+                    }
                   }
                   Text {
                     id: overviewGrade
@@ -560,7 +574,7 @@ Panel {
                   subtitle: String(modelData.course_code || modelData.course_name || "")
                     + " · " + root.dueLabel(modelData.due_at)
                   submitted: !!modelData.submitted
-                  linkAvailable: root.assignmentUrl(modelData) !== ""
+                  linkAvailable: root.canvasItemUrl(modelData) !== ""
                   foreground: root.foreground
                   muted: root.dim
                   accent: root.urgent
@@ -661,16 +675,26 @@ Panel {
             }
 
             Text {
+              id: selectedCourseName
               visible: !!root.selectedCourse
               width: parent.width
               text: root.selectedCourse ? root.selectedCourse.name : ""
               textFormat: Text.PlainText
-              color: root.foreground
+              color: selectedCourseLink.containsMouse ? root.urgent : root.foreground
               font.family: root.fontFamily
               font.pixelSize: Style.font.title
               font.bold: true
               horizontalAlignment: Text.AlignHCenter
               wrapMode: Text.WordWrap
+
+              MouseArea {
+                id: selectedCourseLink
+                anchors.fill: parent
+                enabled: root.canvasItemUrl(root.selectedCourse) !== ""
+                hoverEnabled: enabled
+                cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                onClicked: root.openCourse(root.selectedCourse)
+              }
             }
 
             Text {
@@ -714,7 +738,7 @@ Panel {
                   title: String(modelData.name || "Untitled")
                   subtitle: root.dueLabel(modelData.due_at)
                   submitted: !!modelData.submitted
-                  linkAvailable: root.assignmentUrl(modelData) !== ""
+                  linkAvailable: root.canvasItemUrl(modelData) !== ""
                   foreground: root.foreground
                   muted: root.dim
                   accent: root.urgent

@@ -122,6 +122,19 @@ class CanvasTests(unittest.TestCase):
                     module.validated_canvas_web_url("https://canvas.example.edu", value)
                 )
 
+    def test_builds_canvas_course_web_url(self):
+        self.assertEqual(
+            module.canvas_course_web_url("https://canvas.example.edu", 12345),
+            "https://canvas.example.edu/courses/12345",
+        )
+
+    def test_rejects_invalid_canvas_course_id_for_web_url(self):
+        for value in (True, "", "../account", "12/assignments"):
+            with self.subTest(value=value):
+                self.assertIsNone(
+                    module.canvas_course_web_url("https://canvas.example.edu", value)
+                )
+
     def test_missing_credentials_return_none(self):
         with patch.dict(os.environ, {"CANVAS_API_KEY": "environment-token"}), \
              patch.object(module, "_keyring_token", return_value=None):
@@ -198,6 +211,10 @@ class CanvasTests(unittest.TestCase):
         self.assertEqual(
             data["courses"][0]["assignments"][0]["html_url"],
             "https://canvas.test/a/2",
+        )
+        self.assertEqual(
+            data["courses"][0]["html_url"],
+            "https://canvas.test/courses/1",
         )
 
     def test_next_link(self):

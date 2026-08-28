@@ -1,6 +1,5 @@
 import QtQuick
 import qs.Commons
-import qs.Ui
 
 Item {
   id: row
@@ -16,13 +15,12 @@ Item {
 
   signal activated()
 
-  implicitHeight: Math.max(summary.implicitHeight, openAction.implicitHeight)
+  implicitHeight: summary.implicitHeight
 
   Column {
     id: summary
     anchors.left: parent.left
-    anchors.right: openAction.visible ? openAction.left : parent.right
-    anchors.rightMargin: openAction.visible ? Style.space(8) : 0
+    anchors.right: parent.right
     anchors.verticalCenter: parent.verticalCenter
     spacing: Style.space(4)
 
@@ -49,25 +47,9 @@ Item {
     }
   }
 
-  PanelActionButton {
-    id: openAction
-    anchors.right: parent.right
-    anchors.verticalCenter: parent.verticalCenter
-    visible: row.linkAvailable
-    iconText: "\uf35d"
-    tooltipText: "Open in Canvas"
-    foreground: row.muted
-    hoverColor: row.accent
-    fontFamily: row.fontFamily
-    onClicked: row.activated()
-  }
-
   MouseArea {
     id: linkArea
-    anchors.left: parent.left
-    anchors.right: openAction.visible ? openAction.left : parent.right
-    anchors.top: parent.top
-    anchors.bottom: parent.bottom
+    anchors.fill: parent
     enabled: row.linkAvailable
     hoverEnabled: enabled
     cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
