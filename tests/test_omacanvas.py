@@ -112,39 +112,39 @@ class CanvasTests(unittest.TestCase):
 
     def test_keyring_lookup_is_scoped_to_canvas_url(self):
         completed = Mock(stdout="saved-token\n")
-        with patch.object(module, "shutil_which", return_value="/usr/bin/secret-tool"), \
+        with patch.object(module, "secret_tool_path", return_value="/usr/bin/secret-tool"), \
              patch.object(module.subprocess, "run", return_value=completed) as run:
             self.assertEqual(module._keyring_token("https://canvas.example.edu/"), "saved-token")
             self.assertEqual(
                 run.call_args.args[0],
-                ["secret-tool", "lookup", "service", "omacanvas", "base_url", "https://canvas.example.edu"],
+                ["/usr/bin/secret-tool", "lookup", "service", "omacanvas", "base_url", "https://canvas.example.edu"],
             )
 
     def test_keyring_failure_has_actionable_error(self):
-        with patch.object(module, "shutil_which", return_value="/usr/bin/secret-tool"), \
+        with patch.object(module, "secret_tool_path", return_value="/usr/bin/secret-tool"), \
              patch.object(module.subprocess, "run", side_effect=OSError("keyring unavailable")):
             with self.assertRaisesRegex(RuntimeError, "system keyring"):
                 module._keyring_token("https://canvas.example.edu")
 
     def test_save_token_is_scoped_to_canvas_url(self):
-        with patch.object(module, "shutil_which", return_value="/usr/bin/secret-tool"), \
+        with patch.object(module, "secret_tool_path", return_value="/usr/bin/secret-tool"), \
              patch.object(module.subprocess, "run") as run:
             module.save_token("https://canvas.example.edu/", "secret-token")
             self.assertEqual(
                 run.call_args.args[0],
-                ["secret-tool", "store", "--label=Omacanvas API token (canvas.example.edu)",
+                ["/usr/bin/secret-tool", "store", "--label=Omacanvas API token (canvas.example.edu)",
                  "service", "omacanvas", "base_url", "https://canvas.example.edu"],
             )
             self.assertEqual(run.call_args.kwargs["input"], "secret-token\n")
 
     def test_save_token_failure_has_actionable_error(self):
-        with patch.object(module, "shutil_which", return_value="/usr/bin/secret-tool"), \
+        with patch.object(module, "secret_tool_path", return_value="/usr/bin/secret-tool"), \
              patch.object(module.subprocess, "run", side_effect=OSError("keyring unavailable")):
             with self.assertRaisesRegex(RuntimeError, "Could not save"):
                 module.save_token("https://canvas.example.edu", "secret-token")
 
     def test_clear_token_checks_keyring_exit_status(self):
-        with patch.object(module, "shutil_which", return_value="/usr/bin/secret-tool"), \
+        with patch.object(module, "secret_tool_path", return_value="/usr/bin/secret-tool"), \
              patch.object(module.subprocess, "run") as run:
             module.clear_token("https://canvas.example.edu")
             self.assertTrue(run.call_args.kwargs["check"])
@@ -152,7 +152,7 @@ class CanvasTests(unittest.TestCase):
 
     def test_clear_token_failure_is_not_reported_as_success(self):
         failure = module.subprocess.CalledProcessError(1, ["secret-tool", "clear"])
-        with patch.object(module, "shutil_which", return_value="/usr/bin/secret-tool"), \
+        with patch.object(module, "secret_tool_path", return_value="/usr/bin/secret-tool"), \
              patch.object(module.subprocess, "run", side_effect=failure):
             with self.assertRaisesRegex(RuntimeError, "Could not remove"):
                 module.clear_token("https://canvas.example.edu")

@@ -183,7 +183,7 @@ Panel {
     pendingHiddenState = hidden
     visibilityError = ""
     var command = [
-      "python3", helperPath, hidden ? "hide-course" : "unhide-course",
+      helperPath, hidden ? "hide-course" : "unhide-course",
       String(course.id)
     ]
     if (hidden) {
@@ -196,7 +196,7 @@ Panel {
 
   Process {
     id: statusProc
-    command: ["python3", root.helperPath, "fetch", "--json", "--days", String(root.days)]
+    command: [root.helperPath, "fetch", "--json", "--days", String(root.days)]
     environment: ({ "CANVAS_BASE_URL": root.baseUrl })
     stdout: StdioCollector { id: statusOutput; waitForEnd: true }
     stderr: StdioCollector { id: statusError; waitForEnd: true }

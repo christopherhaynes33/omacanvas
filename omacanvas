@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3
 """Omacanvas data helper for the native Omarchy bar plugin."""
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import getpass
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -180,12 +181,13 @@ def set_course_hidden(
 
 
 def _keyring_token(base_url: str) -> str | None:
-    if not shutil_which("secret-tool"):
+    secret_tool = secret_tool_path()
+    if not secret_tool:
         return None
     instance_url = normalize_instance_url(base_url)
     try:
         result = subprocess.run(
-            ["secret-tool", "lookup", "service", SERVICE, "base_url", instance_url],
+            [secret_tool, "lookup", "service", SERVICE, "base_url", instance_url],
             check=False, capture_output=True, text=True, timeout=5,
         )
         token = result.stdout.strip()
@@ -200,7 +202,8 @@ def get_token(base_url: str) -> str | None:
 
 
 def save_token(base_url: str, token: str) -> None:
-    if not shutil_which("secret-tool"):
+    secret_tool = secret_tool_path()
+    if not secret_tool:
         raise RuntimeError("secret-tool is required to save a token; install libsecret or use CANVAS_API_KEY")
     instance_url = normalize_instance_url(base_url)
     token = token.strip()
@@ -209,7 +212,7 @@ def save_token(base_url: str, token: str) -> None:
     hostname = urlparse(instance_url).netloc
     try:
         subprocess.run(
-            ["secret-tool", "store", f"--label=Omacanvas API token ({hostname})",
+            [secret_tool, "store", f"--label=Omacanvas API token ({hostname})",
              "service", SERVICE, "base_url", instance_url],
             input=token + "\n", text=True, check=True,
         )
@@ -218,24 +221,22 @@ def save_token(base_url: str, token: str) -> None:
 
 
 def clear_token(base_url: str) -> None:
-    if not shutil_which("secret-tool"):
+    secret_tool = secret_tool_path()
+    if not secret_tool:
         raise RuntimeError("secret-tool is required to remove a saved token")
     instance_url = normalize_instance_url(base_url)
     try:
         subprocess.run(
-            ["secret-tool", "clear", "service", SERVICE, "base_url", instance_url],
+            [secret_tool, "clear", "service", SERVICE, "base_url", instance_url],
             check=True, capture_output=True, text=True, timeout=10,
         )
     except (OSError, subprocess.SubprocessError) as error:
         raise RuntimeError(f"Could not remove the Canvas token from the system keyring: {error}") from error
 
 
-def shutil_which(command: str) -> str | None:
-    for directory in os.environ.get("PATH", "").split(os.pathsep):
-        candidate = Path(directory) / command
-        if candidate.is_file() and os.access(candidate, os.X_OK):
-            return str(candidate)
-    return None
+def secret_tool_path() -> str | None:
+    located = shutil.which("secret-tool")
+    return str(Path(located).resolve()) if located else None
 
 
 class CanvasClient:
