@@ -4,6 +4,9 @@ Omacanvas is a native Omarchy Quickshell bar widget for Canvas LMS. It shows
 current grades and assignments due soon across active courses in which the
 Canvas user has a student enrollment. Teacher-only courses are excluded.
 
+Omacanvas is an independent community project and is not affiliated with,
+endorsed by, or sponsored by Instructure or Canvas LMS.
+
 ![Omacanvas Overview, Assignments, and Courses views](preview.png)
 
 The panel provides three views:
