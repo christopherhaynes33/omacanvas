@@ -163,13 +163,14 @@ Remove the token for one Canvas installation:
   --base-url https://canvas.example.edu
 ```
 
-For temporary terminal use, `CANVAS_API_KEY` overrides the keyring without
-being written to disk:
+For temporary terminal use, explicitly select `CANVAS_API_KEY` instead of the
+keyring. It is not written to disk and never overrides URL-scoped credentials
+unless `--token-from-env` is present:
 
 ```sh
 CANVAS_API_KEY='your-token' \
   ~/.config/omarchy/plugins/io.github.christopherhaynes33.omacanvas/omacanvas fetch \
-  --base-url https://canvas.example.edu
+  --token-from-env --base-url https://canvas.example.edu
 ```
 
 Avoid placing a real token in shell history. Prefer the interactive

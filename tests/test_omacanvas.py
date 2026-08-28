@@ -97,18 +97,26 @@ class CanvasTests(unittest.TestCase):
         self.assertEqual(module.sanitize_text(None, "Untitled"), "Untitled")
 
     def test_missing_credentials_return_none(self):
-        with patch.dict(os.environ, {"CANVAS_API_KEY": ""}), \
+        with patch.dict(os.environ, {"CANVAS_API_KEY": "environment-token"}), \
              patch.object(module, "_keyring_token", return_value=None):
             self.assertIsNone(module.get_token("https://canvas.example.edu"))
 
-    def test_environment_token_works_without_keyring(self):
+    def test_environment_token_requires_explicit_opt_in(self):
         with patch.dict(os.environ, {"CANVAS_API_KEY": "from-environment"}), \
              patch.object(module, "_keyring_token") as keyring:
             self.assertEqual(
-                module.get_token("https://canvas.example.edu"),
+                module.get_token("https://canvas.example.edu", token_from_environment=True),
                 "from-environment",
             )
             keyring.assert_not_called()
+
+    def test_environment_token_does_not_override_scoped_keyring(self):
+        with patch.dict(os.environ, {"CANVAS_API_KEY": "wrong-instance-token"}), \
+             patch.object(module, "_keyring_token", return_value="scoped-token"):
+            self.assertEqual(
+                module.get_token("https://canvas.example.edu"),
+                "scoped-token",
+            )
 
     def test_keyring_lookup_is_scoped_to_canvas_url(self):
         completed = Mock(stdout="saved-token\n")

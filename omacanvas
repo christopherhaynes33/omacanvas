@@ -196,15 +196,16 @@ def _keyring_token(base_url: str) -> str | None:
         raise RuntimeError(f"Could not read the Canvas token from the system keyring: {error}") from error
 
 
-def get_token(base_url: str) -> str | None:
-    environment_token = os.environ.get("CANVAS_API_KEY", "").strip()
-    return environment_token or _keyring_token(base_url)
+def get_token(base_url: str, token_from_environment: bool = False) -> str | None:
+    if token_from_environment:
+        return os.environ.get("CANVAS_API_KEY", "").strip() or None
+    return _keyring_token(base_url)
 
 
 def save_token(base_url: str, token: str) -> None:
     secret_tool = secret_tool_path()
     if not secret_tool:
-        raise RuntimeError("secret-tool is required to save a token; install libsecret or use CANVAS_API_KEY")
+        raise RuntimeError("secret-tool is required to save a token; install libsecret")
     instance_url = normalize_instance_url(base_url)
     token = token.strip()
     if not token:
@@ -384,6 +385,10 @@ def main() -> int:
     parser.add_argument("course_id", nargs="?")
     parser.add_argument("--days", type=int, default=14)
     parser.add_argument("--json", action="store_true", dest="as_json")
+    parser.add_argument(
+        "--token-from-env", action="store_true",
+        help="read CANVAS_API_KEY instead of the URL-scoped system keyring",
+    )
     parser.add_argument("--course-name", default="")
     parser.add_argument("--course-code", default="")
     parser.add_argument(
@@ -414,11 +419,13 @@ def main() -> int:
             set_course_hidden(base_url, args.course_id, hidden, args.course_name, args.course_code)
             print("Course hidden." if hidden else "Course unhidden.")
             return 0
-        token = get_token(base_url)
+        token = get_token(base_url, args.token_from_env)
         if not token:
+            if args.token_from_env:
+                raise RuntimeError("CANVAS_API_KEY is empty")
             raise RuntimeError(
                 f"No Canvas API token is saved for {base_url}. "
-                f"Run 'omacanvas set-token --base-url {base_url}' or set CANVAS_API_KEY"
+                f"Run 'omacanvas set-token --base-url {base_url}'"
             )
         hidden_ids = set(hidden_courses_for(base_url))
         data = collect(CanvasClient(base_url, token), max(1, args.days), hidden_course_ids=hidden_ids)
