@@ -1,0 +1,316 @@
+#!/usr/bin/env python3
+"""Omacanvas data helper for the native Omarchy bar plugin."""
+from __future__ import annotations
+
+import argparse
+import getpass
+import json
+import os
+import re
+import subprocess
+import sys
+from datetime import datetime, timedelta, timezone
+from html import unescape
+from pathlib import Path
+from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode, urljoin, urlparse
+from urllib.request import Request, urlopen
+
+
+SERVICE = "omacanvas"
+VISIBILITY_VERSION = 1
+
+
+def visibility_path() -> Path:
+    config_home = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+    return config_home / "omacanvas" / "hidden-courses.json"
+
+
+def normalize_instance_url(base_url: str) -> str:
+    value = base_url.strip().rstrip("/")
+    parsed = urlparse(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise RuntimeError(
+            "Canvas URL must include http:// or https:// and a hostname "
+            "(for example, https://canvas.example.edu)"
+        )
+    if parsed.query or parsed.fragment:
+        raise RuntimeError("Canvas URL must not include a query string or fragment")
+    return value
+
+
+def _load_visibility(path: Path | None = None) -> dict[str, Any]:
+    path = path or visibility_path()
+    if not path.exists():
+        return {"version": VISIBILITY_VERSION, "instances": {}}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise RuntimeError(f"Could not read hidden-course preferences: {error}") from error
+    if not isinstance(data, dict) or data.get("version") != VISIBILITY_VERSION:
+        raise RuntimeError("Hidden-course preferences use an unsupported format")
+    if not isinstance(data.get("instances"), dict):
+        data["instances"] = {}
+    return data
+
+
+def hidden_courses_for(base_url: str, path: Path | None = None) -> dict[str, dict[str, str]]:
+    data = _load_visibility(path)
+    courses = data["instances"].get(normalize_instance_url(base_url), {})
+    return courses if isinstance(courses, dict) else {}
+
+
+def set_course_hidden(
+    base_url: str,
+    course_id: str,
+    hidden: bool,
+    name: str = "",
+    code: str = "",
+    path: Path | None = None,
+) -> None:
+    path = path or visibility_path()
+    data = _load_visibility(path)
+    instance_url = normalize_instance_url(base_url)
+    instances = data["instances"]
+    courses = instances.setdefault(instance_url, {})
+    course_key = str(course_id)
+    if hidden:
+        courses[course_key] = {"name": name, "code": code}
+    else:
+        courses.pop(course_key, None)
+        if not courses:
+            instances.pop(instance_url, None)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    os.chmod(temporary, 0o600)
+    temporary.replace(path)
+
+
+def _keyring_token(base_url: str) -> str | None:
+    if not shutil_which("secret-tool"):
+        return None
+    instance_url = normalize_instance_url(base_url)
+    try:
+        result = subprocess.run(
+            ["secret-tool", "lookup", "service", SERVICE, "base_url", instance_url],
+            check=False, capture_output=True, text=True, timeout=5,
+        )
+        token = result.stdout.strip()
+        return token or None
+    except (OSError, subprocess.SubprocessError) as error:
+        raise RuntimeError(f"Could not read the Canvas token from the system keyring: {error}") from error
+
+
+def get_token(base_url: str) -> str | None:
+    environment_token = os.environ.get("CANVAS_API_KEY", "").strip()
+    return environment_token or _keyring_token(base_url)
+
+
+def save_token(base_url: str, token: str) -> None:
+    if not shutil_which("secret-tool"):
+        raise RuntimeError("secret-tool is required to save a token; install libsecret or use CANVAS_API_KEY")
+    instance_url = normalize_instance_url(base_url)
+    token = token.strip()
+    if not token:
+        raise RuntimeError("Canvas API token cannot be empty")
+    hostname = urlparse(instance_url).netloc
+    try:
+        subprocess.run(
+            ["secret-tool", "store", f"--label=Omacanvas API token ({hostname})",
+             "service", SERVICE, "base_url", instance_url],
+            input=token + "\n", text=True, check=True,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise RuntimeError(f"Could not save the Canvas token in the system keyring: {error}") from error
+
+
+def clear_token(base_url: str) -> None:
+    if not shutil_which("secret-tool"):
+        raise RuntimeError("secret-tool is required to remove a saved token")
+    instance_url = normalize_instance_url(base_url)
+    try:
+        subprocess.run(
+            ["secret-tool", "clear", "service", SERVICE, "base_url", instance_url],
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise RuntimeError(f"Could not remove the Canvas token from the system keyring: {error}") from error
+
+
+def shutil_which(command: str) -> str | None:
+    for directory in os.environ.get("PATH", "").split(os.pathsep):
+        candidate = Path(directory) / command
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return None
+
+
+class CanvasClient:
+    def __init__(self, base_url: str, token: str):
+        self.base_url = normalize_instance_url(base_url) + "/"
+        self.token = token
+
+    def get_all(self, path: str, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        url = urljoin(self.base_url, path.lstrip("/"))
+        if params:
+            url += "?" + urlencode(params, doseq=True)
+        records: list[dict[str, Any]] = []
+        while url:
+            request = Request(url, headers={"Authorization": f"Bearer {self.token}", "Accept": "application/json"})
+            try:
+                with urlopen(request, timeout=20) as response:
+                    records.extend(json.loads(response.read().decode("utf-8")))
+                    url = _next_link(response.headers.get("Link"))
+            except HTTPError as error:
+                if error.code in (401, 403):
+                    raise RuntimeError("Canvas rejected the API token") from error
+                raise RuntimeError(f"Canvas API returned HTTP {error.code}") from error
+            except (URLError, TimeoutError, json.JSONDecodeError) as error:
+                raise RuntimeError(f"Could not reach Canvas: {error}") from error
+        return records
+
+
+def _next_link(header: str | None) -> str | None:
+    if not header:
+        return None
+    for part in header.split(","):
+        match = re.match(r"\s*<([^>]+)>\s*;\s*rel=\"?next\"?", part)
+        if match:
+            return match.group(1)
+    return None
+
+
+def parse_time(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
+
+
+def collect(
+    client: CanvasClient,
+    days: int = 14,
+    now: datetime | None = None,
+    hidden_course_ids: set[str] | None = None,
+) -> dict[str, Any]:
+    now = now or datetime.now(timezone.utc)
+    cutoff = now + timedelta(days=days)
+    hidden_course_ids = hidden_course_ids or set()
+    courses = client.get_all("api/v1/users/self/courses", {
+        "enrollment_state": "active", "enrollment_type": "student",
+        "include[]": ["total_scores"], "per_page": 100,
+    })
+    result_courses = []
+    hidden_courses = []
+    for course in courses:
+        if not course.get("id") or course.get("access_restricted_by_date"):
+            continue
+        enrollments = course.get("enrollments") or []
+        enrollment = next(
+            (item for item in enrollments
+             if str(item.get("type", "")).lower() in {"student", "studentenrollment"}),
+            None,
+        )
+        if enrollment is None:
+            continue
+        if str(course["id"]) in hidden_course_ids:
+            hidden_courses.append({
+                "id": course["id"], "name": course.get("name", "Unnamed course"),
+                "code": course.get("course_code"),
+            })
+            continue
+        assignments = client.get_all(f"api/v1/courses/{course['id']}/assignments", {
+            "include[]": ["submission"], "order_by": "due_at", "per_page": 100,
+        })
+        upcoming = []
+        for assignment in assignments:
+            due = parse_time(assignment.get("due_at"))
+            if due and now <= due <= cutoff:
+                submission = assignment.get("submission") or {}
+                upcoming.append({
+                    "id": assignment.get("id"), "name": unescape(assignment.get("name", "Untitled")),
+                    "due_at": due.isoformat(), "submitted": submission.get("submitted_at") is not None,
+                    "html_url": assignment.get("html_url"),
+                })
+        result_courses.append({
+            "id": course["id"], "name": course.get("name", "Unnamed course"),
+            "code": course.get("course_code"),
+            "current_score": enrollment.get("computed_current_score"),
+            "current_grade": enrollment.get("computed_current_grade"),
+            "assignments": upcoming,
+        })
+    result_courses.sort(key=lambda item: item["name"].lower())
+    hidden_courses.sort(key=lambda item: item["name"].lower())
+    return {
+        "fetched_at": now.isoformat(), "days": days,
+        "courses": result_courses, "hidden_courses": hidden_courses,
+    }
+
+
+def print_terminal(data: dict[str, Any]) -> None:
+    print(f"Canvas — assignments due in the next {data['days']} days")
+    for course in data["courses"]:
+        grade = course["current_grade"] or (f"{course['current_score']:.1f}%" if isinstance(course["current_score"], (int, float)) else "—")
+        print(f"\n{course['name']} ({grade})")
+        for assignment in course["assignments"]:
+            status = "submitted" if assignment["submitted"] else "TODO"
+            print(f"  [{status:9}] {assignment['due_at'][:10]}  {assignment['name']}")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("command", choices=["fetch", "set-token", "clear-token", "hide-course", "unhide-course"])
+    parser.add_argument("course_id", nargs="?")
+    parser.add_argument("--days", type=int, default=14)
+    parser.add_argument("--json", action="store_true", dest="as_json")
+    parser.add_argument("--course-name", default="")
+    parser.add_argument("--course-code", default="")
+    parser.add_argument(
+        "--base-url", default="",
+        help="Canvas installation URL; defaults to CANVAS_BASE_URL",
+    )
+    args = parser.parse_args()
+    try:
+        raw_base_url = args.base_url or os.environ.get("CANVAS_BASE_URL", "")
+        if not raw_base_url:
+            raise RuntimeError(
+                "Set a Canvas URL with --base-url or CANVAS_BASE_URL "
+                "(for example, https://canvas.example.edu)"
+            )
+        base_url = normalize_instance_url(raw_base_url)
+        if args.command == "set-token":
+            save_token(base_url, getpass.getpass(f"Canvas API token for {base_url}: "))
+            print(f"Canvas token saved in the system keyring for {base_url}.")
+            return 0
+        if args.command == "clear-token":
+            clear_token(base_url)
+            print(f"Canvas token removed from the system keyring for {base_url}.")
+            return 0
+        if args.command in {"hide-course", "unhide-course"}:
+            if not args.course_id:
+                raise RuntimeError("A course ID is required")
+            hidden = args.command == "hide-course"
+            set_course_hidden(base_url, args.course_id, hidden, args.course_name, args.course_code)
+            print("Course hidden." if hidden else "Course unhidden.")
+            return 0
+        token = get_token(base_url)
+        if not token:
+            raise RuntimeError(
+                f"No Canvas API token is saved for {base_url}. "
+                f"Run 'omacanvas set-token --base-url {base_url}' or set CANVAS_API_KEY"
+            )
+        hidden_ids = set(hidden_courses_for(base_url))
+        data = collect(CanvasClient(base_url, token), max(1, args.days), hidden_course_ids=hidden_ids)
+        if args.as_json:
+            print(json.dumps(data, indent=2, ensure_ascii=False))
+        else:
+            print_terminal(data)
+        return 0
+    except (RuntimeError, OSError, subprocess.CalledProcessError) as error:
+        print(f"omacanvas: {error}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

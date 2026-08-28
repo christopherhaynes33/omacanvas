@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.christopherhaynes33.omacanvas",
+  "name": "Omacanvas",
+  "version": "0.6.0",
+  "author": "Christopher Haynes",
+  "license": "MIT",
+  "description": "Student course grades and upcoming Canvas assignments in the Omarchy bar.",
+  "kinds": ["bar-widget"],
+  "activation": "on-demand",
+  "entryPoints": {"barWidget": "Panel.qml"},
+  "barWidget": {
+    "displayName": "Omacanvas",
+    "description": "Current grades and assignments due soon for student-enrolled courses.",
+    "category": "Productivity",
+    "aliases": ["canvas", "assignments", "school"],
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "baseUrl": "",
+      "days": 14,
+      "refreshIntervalSec": 21600
+    },
+    "schema": [
+      {
+        "key": "baseUrl",
+        "type": "string",
+        "label": "Canvas URL",
+        "defaultValue": "",
+        "description": "Your institution's Canvas origin, such as https://canvas.example.edu (without a course path)."
+      },
+      {
+        "key": "days",
+        "type": "integer",
+        "label": "Upcoming assignment window (days)",
+        "min": 1,
+        "max": 60,
+        "step": 1,
+        "defaultValue": 14
+      },
+      {
+        "key": "refreshIntervalSec",
+        "type": "integer",
+        "label": "Refresh interval (seconds)",
+        "min": 300,
+        "max": 86400,
+        "step": 900,
+        "defaultValue": 21600
+      }
+    ]
+  }
+}
