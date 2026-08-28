@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.christopherhaynes33.omacanvas",
   "name": "Omacanvas",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "author": "Christopher Haynes",
   "license": "MIT",
   "description": "Student course grades and upcoming Canvas assignments in the Omarchy bar.",
