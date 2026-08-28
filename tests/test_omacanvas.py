@@ -41,6 +41,31 @@ class MixedRoleClient:
         return []
 
 
+class FakeResponse:
+    def __init__(self, payload, link=None, raw=None):
+        self.raw = raw if raw is not None else module.json.dumps(payload).encode("utf-8")
+        self.headers = {"Link": link} if link else {}
+
+    def read(self, limit=-1):
+        return self.raw if limit < 0 else self.raw[:limit]
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+
+class FakeOpener:
+    def __init__(self, *responses):
+        self.responses = list(responses)
+
+    def open(self, _request, timeout=None):
+        if not self.responses:
+            raise AssertionError("Unexpected API request")
+        return self.responses.pop(0)
+
+
 class CanvasTests(unittest.TestCase):
     def test_normalizes_canvas_url(self):
         self.assertEqual(
@@ -166,6 +191,45 @@ class CanvasTests(unittest.TestCase):
                 request, None, 302, "Found", {},
                 "https://attacker.example/collect",
             )
+
+    def test_rejects_oversized_api_response(self):
+        response = FakeResponse([], raw=b"[" + b" " * 20 + b"]")
+        with patch.object(module, "MAX_RESPONSE_BYTES", 10):
+            client = module.CanvasClient(
+                "https://canvas.example.edu", "token",
+                opener=FakeOpener(response), clock=lambda: 0,
+            )
+            with self.assertRaisesRegex(RuntimeError, "size limit"):
+                client.get_all("api/v1/courses")
+
+    def test_rejects_repeated_pagination_page(self):
+        first_url = "https://canvas.example.edu/api/v1/courses"
+        response = FakeResponse([], link=f'<{first_url}>; rel="next"')
+        client = module.CanvasClient(
+            "https://canvas.example.edu", "token",
+            opener=FakeOpener(response), clock=lambda: 0,
+        )
+        with self.assertRaisesRegex(RuntimeError, "repeated"):
+            client.get_all("api/v1/courses")
+
+    def test_rejects_too_many_api_records(self):
+        with patch.object(module, "MAX_RECORDS", 1):
+            client = module.CanvasClient(
+                "https://canvas.example.edu", "token",
+                opener=FakeOpener(FakeResponse([{"id": 1}, {"id": 2}])),
+                clock=lambda: 0,
+            )
+            with self.assertRaisesRegex(RuntimeError, "record limit"):
+                client.get_all("api/v1/courses")
+
+    def test_enforces_overall_fetch_deadline(self):
+        times = iter((0, module.MAX_FETCH_SECONDS + 1))
+        client = module.CanvasClient(
+            "https://canvas.example.edu", "token",
+            opener=FakeOpener(), clock=lambda: next(times),
+        )
+        with self.assertRaisesRegex(RuntimeError, "allowed duration"):
+            client.get_all("api/v1/courses")
 
     def test_excludes_teacher_only_courses_before_fetching_assignments(self):
         client = MixedRoleClient()
