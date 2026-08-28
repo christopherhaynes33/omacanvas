@@ -117,6 +117,20 @@ class CanvasTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "Could not save"):
                 module.save_token("https://canvas.example.edu", "secret-token")
 
+    def test_clear_token_checks_keyring_exit_status(self):
+        with patch.object(module, "shutil_which", return_value="/usr/bin/secret-tool"), \
+             patch.object(module.subprocess, "run") as run:
+            module.clear_token("https://canvas.example.edu")
+            self.assertTrue(run.call_args.kwargs["check"])
+            self.assertEqual(run.call_args.kwargs["timeout"], 10)
+
+    def test_clear_token_failure_is_not_reported_as_success(self):
+        failure = module.subprocess.CalledProcessError(1, ["secret-tool", "clear"])
+        with patch.object(module, "shutil_which", return_value="/usr/bin/secret-tool"), \
+             patch.object(module.subprocess, "run", side_effect=failure):
+            with self.assertRaisesRegex(RuntimeError, "Could not remove"):
+                module.clear_token("https://canvas.example.edu")
+
     def test_collects_only_assignments_in_window(self):
         data = module.collect(FakeClient(), 14, datetime(2026, 8, 27, tzinfo=timezone.utc))
         self.assertEqual(len(data["courses"]), 1)

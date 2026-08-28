@@ -197,7 +197,7 @@ def clear_token(base_url: str) -> None:
     try:
         subprocess.run(
             ["secret-tool", "clear", "service", SERVICE, "base_url", instance_url],
-            check=False,
+            check=True, capture_output=True, text=True, timeout=10,
         )
     except (OSError, subprocess.SubprocessError) as error:
         raise RuntimeError(f"Could not remove the Canvas token from the system keyring: {error}") from error
