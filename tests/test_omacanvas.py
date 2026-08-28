@@ -15,6 +15,8 @@ module = SourceFileLoader("omacanvas", str(Path(__file__).parents[1] / "omacanva
 
 
 class FakeClient:
+    base_url = "https://canvas.test/"
+
     def get_all(self, path, params=None):
         if path == "api/v1/users/self/courses":
             return [{"id": 1, "name": "Software Engineering", "course_code": "CSC3400",
@@ -25,6 +27,8 @@ class FakeClient:
 
 
 class MixedRoleClient:
+    base_url = "https://canvas.test/"
+
     def __init__(self):
         self.requested_paths = []
         self.requested_params = []
@@ -95,6 +99,28 @@ class CanvasTests(unittest.TestCase):
             "<img src='https://attacker.example/pixel'> [31m",
         )
         self.assertEqual(module.sanitize_text(None, "Untitled"), "Untitled")
+
+    def test_validates_canvas_assignment_web_url(self):
+        self.assertEqual(
+            module.validated_canvas_web_url(
+                "https://canvas.example.edu",
+                "/courses/10/assignments/20",
+            ),
+            "https://canvas.example.edu/courses/10/assignments/20",
+        )
+
+    def test_rejects_external_or_unsafe_assignment_web_url(self):
+        for value in (
+            "https://attacker.example/collect",
+            "http://canvas.example.edu/courses/10/assignments/20",
+            "javascript:alert(1)",
+            "https://canvas.example.edu/courses/10/assignments/20\nfile:///etc/passwd",
+            None,
+        ):
+            with self.subTest(value=value):
+                self.assertIsNone(
+                    module.validated_canvas_web_url("https://canvas.example.edu", value)
+                )
 
     def test_missing_credentials_return_none(self):
         with patch.dict(os.environ, {"CANVAS_API_KEY": "environment-token"}), \
@@ -169,6 +195,10 @@ class CanvasTests(unittest.TestCase):
         data = module.collect(FakeClient(), 14, datetime(2026, 8, 27, tzinfo=timezone.utc))
         self.assertEqual(len(data["courses"]), 1)
         self.assertEqual([a["name"] for a in data["courses"][0]["assignments"]], ["In range"])
+        self.assertEqual(
+            data["courses"][0]["assignments"][0]["html_url"],
+            "https://canvas.test/a/2",
+        )
 
     def test_next_link(self):
         self.assertEqual(module._next_link('<https://canvas.test/p2>; rel="next"'), "https://canvas.test/p2")

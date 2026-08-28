@@ -177,6 +177,19 @@ Panel {
     return elidedLabel(course.name || ("Course " + (index + 1)), 20)
   }
 
+  function assignmentUrl(assignment) {
+    if (!assignment) return ""
+    var candidate = String(assignment.html_url || "").trim()
+    var origin = String(baseUrl || "").trim().replace(/\/+$/, "").toLowerCase()
+    if (candidate === "" || origin === "") return ""
+    return candidate.toLowerCase().indexOf(origin + "/") === 0 ? candidate : ""
+  }
+
+  function openAssignment(assignment) {
+    var url = assignmentUrl(assignment)
+    if (url !== "") Qt.openUrlExternally(url)
+  }
+
   function setCourseVisibility(course, hidden) {
     if (!course || visibilityProc.running || baseUrl === "") return
     pendingVisibilityCourse = course
@@ -541,25 +554,18 @@ Panel {
                 width: assignmentsPane.width
                 spacing: Style.space(4)
 
-                Text {
+                AssignmentLinkRow {
                   width: parent.width
-                  text: (modelData.submitted ? "✓  " : "•  ") + modelData.name
-                  textFormat: Text.PlainText
-                  color: modelData.submitted ? root.dim : root.foreground
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.body
-                  font.bold: !modelData.submitted
-                  wrapMode: Text.WordWrap
-                }
-                Text {
-                  width: parent.width
-                  text: String(modelData.course_code || modelData.course_name || "")
+                  title: String(modelData.name || "Untitled")
+                  subtitle: String(modelData.course_code || modelData.course_name || "")
                     + " · " + root.dueLabel(modelData.due_at)
-                  textFormat: Text.PlainText
-                  color: root.dim
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
-                  wrapMode: Text.WordWrap
+                  submitted: !!modelData.submitted
+                  linkAvailable: root.assignmentUrl(modelData) !== ""
+                  foreground: root.foreground
+                  muted: root.dim
+                  accent: root.urgent
+                  fontFamily: root.fontFamily
+                  onActivated: root.openAssignment(modelData)
                 }
                 PanelSeparator {
                   visible: index < root.assignments.length - 1
@@ -702,23 +708,18 @@ Panel {
                 required property int index
                 width: coursesPane.width
                 spacing: Style.space(4)
-                Text {
+
+                AssignmentLinkRow {
                   width: parent.width
-                  text: (modelData.submitted ? "✓  " : "•  ") + modelData.name
-                  textFormat: Text.PlainText
-                  color: modelData.submitted ? root.dim : root.foreground
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.body
-                  font.bold: !modelData.submitted
-                  wrapMode: Text.WordWrap
-                }
-                Text {
-                  width: parent.width
-                  text: root.dueLabel(modelData.due_at)
-                  color: root.dim
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
-                  wrapMode: Text.WordWrap
+                  title: String(modelData.name || "Untitled")
+                  subtitle: root.dueLabel(modelData.due_at)
+                  submitted: !!modelData.submitted
+                  linkAvailable: root.assignmentUrl(modelData) !== ""
+                  foreground: root.foreground
+                  muted: root.dim
+                  accent: root.urgent
+                  fontFamily: root.fontFamily
+                  onActivated: root.openAssignment(modelData)
                 }
                 PanelSeparator {
                   visible: root.selectedCourse

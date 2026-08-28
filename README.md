@@ -108,6 +108,7 @@ Right-click the Omacanvas bar icon after configuration to refresh immediately.
 - Left-click the bar icon to open or close the panel.
 - Right-click the bar icon to refresh Canvas data manually.
 - Select **Overview**, **Assignments**, or **Courses** at the top of the panel.
+- Select an assignment row or its external-link action to open it in Canvas.
 - Press `1`, `2`, or `3` to select a view while the panel is focused.
 - Press Left/Right to change views and Up/Down to scroll.
 - Press `R` or Enter to refresh, and Escape to close the panel.
@@ -225,7 +226,9 @@ Omacanvas sends authenticated HTTPS requests only to the configured Canvas
 installation. It requests active student enrollments, current scores/grades,
 and assignments due within the selected window. Hidden courses skip assignment
 requests. The token is read from the desktop keyring and is never written to
-Omarchy's plain-text configuration.
+Omarchy's plain-text configuration. Assignment links are opened in the default
+browser only after Omacanvas verifies that they use the configured Canvas
+origin; the API token is not included in browser links.
 
 Like every Omarchy shell plugin, Omacanvas runs as user code inside the shell.
 Review third-party plugin source before installation.

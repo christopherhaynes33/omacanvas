@@ -112,6 +112,18 @@ def sanitize_text(value: Any, fallback: str = "") -> str:
     return " ".join(text.split()) or fallback
 
 
+def validated_canvas_web_url(base_url: str, value: Any) -> str | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    if any(unicodedata.category(character) == "Cc" for character in value):
+        return None
+    candidate = urljoin(normalize_instance_url(base_url) + "/", value.strip())
+    try:
+        return _require_same_origin(base_url, candidate)
+    except CrossOriginRequestError:
+        return None
+
+
 def _load_visibility(path: Path | None = None) -> dict[str, Any]:
     path = path or visibility_path()
     if path.is_symlink():
@@ -352,7 +364,9 @@ def collect(
                     "id": assignment.get("id"),
                     "name": sanitize_text(assignment.get("name"), "Untitled"),
                     "due_at": due.isoformat(), "submitted": submission.get("submitted_at") is not None,
-                    "html_url": assignment.get("html_url"),
+                    "html_url": validated_canvas_web_url(
+                        client.base_url, assignment.get("html_url"),
+                    ),
                 })
         result_courses.append({
             "id": course["id"], "name": course_name,
