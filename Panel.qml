@@ -378,6 +378,7 @@ Panel {
             visible: root.errorText !== ""
             width: parent.width
             text: root.errorText
+            textFormat: Text.PlainText
             color: root.urgent
             font.family: root.fontFamily
             font.pixelSize: Style.font.body
@@ -399,6 +400,7 @@ Panel {
             visible: root.visibilityError !== ""
             width: parent.width
             text: root.visibilityError
+            textFormat: Text.PlainText
             color: root.urgent
             font.family: root.fontFamily
             font.pixelSize: Style.font.body
@@ -468,6 +470,7 @@ Panel {
                     anchors.right: overviewGrade.left
                     anchors.rightMargin: Style.space(12)
                     text: modelData.name
+                    textFormat: Text.PlainText
                     color: root.foreground
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.body
@@ -477,6 +480,7 @@ Panel {
                     id: overviewGrade
                     anchors.right: parent.right
                     text: root.grade(modelData)
+                    textFormat: Text.PlainText
                     color: root.foreground
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.body
@@ -499,6 +503,7 @@ Panel {
               text: root.assignments.length > 0
                 ? "Next: " + root.dueLabel(root.assignments[0].due_at) + " — " + root.assignments[0].name
                 : ""
+              textFormat: Text.PlainText
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
@@ -539,6 +544,7 @@ Panel {
                 Text {
                   width: parent.width
                   text: (modelData.submitted ? "✓  " : "•  ") + modelData.name
+                  textFormat: Text.PlainText
                   color: modelData.submitted ? root.dim : root.foreground
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.body
@@ -549,6 +555,7 @@ Panel {
                   width: parent.width
                   text: String(modelData.course_code || modelData.course_name || "")
                     + " · " + root.dueLabel(modelData.due_at)
+                  textFormat: Text.PlainText
                   color: root.dim
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.caption
@@ -625,6 +632,7 @@ Panel {
                 anchors.verticalCenter: parent.verticalCenter
                 text: root.selectedCourse
                   ? root.courseLabel(root.selectedCourse, root.selectedCourseIndex) : ""
+                textFormat: Text.PlainText
                 color: root.foreground
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.subtitle
@@ -650,6 +658,7 @@ Panel {
               visible: !!root.selectedCourse
               width: parent.width
               text: root.selectedCourse ? root.selectedCourse.name : ""
+              textFormat: Text.PlainText
               color: root.foreground
               font.family: root.fontFamily
               font.pixelSize: Style.font.title
@@ -662,6 +671,7 @@ Panel {
               visible: !!root.selectedCourse
               width: parent.width
               text: root.selectedCourse ? "Current grade  ·  " + root.grade(root.selectedCourse) : ""
+              textFormat: Text.PlainText
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall
@@ -695,6 +705,7 @@ Panel {
                 Text {
                   width: parent.width
                   text: (modelData.submitted ? "✓  " : "•  ") + modelData.name
+                  textFormat: Text.PlainText
                   color: modelData.submitted ? root.dim : root.foreground
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.body
@@ -767,6 +778,7 @@ Panel {
                     Text {
                       width: parent.width
                       text: modelData.name
+                      textFormat: Text.PlainText
                       color: root.dim
                       font.family: root.fontFamily
                       font.pixelSize: Style.font.bodySmall
@@ -776,6 +788,7 @@ Panel {
                       visible: String(modelData.code || "") !== ""
                       width: parent.width
                       text: String(modelData.code || "")
+                      textFormat: Text.PlainText
                       color: Qt.darker(root.dim, 1.25)
                       font.family: root.fontFamily
                       font.pixelSize: Style.font.caption

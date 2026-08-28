@@ -9,6 +9,7 @@ import os
 import re
 import subprocess
 import sys
+import unicodedata
 from datetime import datetime, timedelta, timezone
 from html import unescape
 from pathlib import Path
@@ -92,6 +93,15 @@ def normalize_instance_url(base_url: str) -> str:
         hostname = f"[{hostname}]"
     netloc = hostname if port is None else f"{hostname}:{port}"
     return f"https://{netloc}"
+
+
+def sanitize_text(value: Any, fallback: str = "") -> str:
+    text = unescape(str(value if value is not None else fallback))
+    text = "".join(
+        " " if unicodedata.category(character) in {"Cc", "Cf"} else character
+        for character in text
+    )
+    return " ".join(text.split()) or fallback
 
 
 def _load_visibility(path: Path | None = None) -> dict[str, Any]:
@@ -271,10 +281,12 @@ def collect(
         )
         if enrollment is None:
             continue
+        course_name = sanitize_text(course.get("name"), "Unnamed course")
+        course_code = sanitize_text(course.get("course_code"))
         if str(course["id"]) in hidden_course_ids:
             hidden_courses.append({
-                "id": course["id"], "name": course.get("name", "Unnamed course"),
-                "code": course.get("course_code"),
+                "id": course["id"], "name": course_name,
+                "code": course_code,
             })
             continue
         assignments = client.get_all(f"api/v1/courses/{course['id']}/assignments", {
@@ -286,15 +298,16 @@ def collect(
             if due and now <= due <= cutoff:
                 submission = assignment.get("submission") or {}
                 upcoming.append({
-                    "id": assignment.get("id"), "name": unescape(assignment.get("name", "Untitled")),
+                    "id": assignment.get("id"),
+                    "name": sanitize_text(assignment.get("name"), "Untitled"),
                     "due_at": due.isoformat(), "submitted": submission.get("submitted_at") is not None,
                     "html_url": assignment.get("html_url"),
                 })
         result_courses.append({
-            "id": course["id"], "name": course.get("name", "Unnamed course"),
-            "code": course.get("course_code"),
+            "id": course["id"], "name": course_name,
+            "code": course_code,
             "current_score": enrollment.get("computed_current_score"),
-            "current_grade": enrollment.get("computed_current_grade"),
+            "current_grade": sanitize_text(enrollment.get("computed_current_grade")) or None,
             "assignments": upcoming,
         })
     result_courses.sort(key=lambda item: item["name"].lower())

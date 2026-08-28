@@ -63,6 +63,13 @@ class CanvasTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(RuntimeError):
                 module.normalize_instance_url(value)
 
+    def test_sanitizes_canvas_text_for_ui_and_terminal_output(self):
+        self.assertEqual(
+            module.sanitize_text("&lt;img src='https://attacker.example/pixel'&gt;\x1b[31m"),
+            "<img src='https://attacker.example/pixel'> [31m",
+        )
+        self.assertEqual(module.sanitize_text(None, "Untitled"), "Untitled")
+
     def test_missing_credentials_return_none(self):
         with patch.dict(os.environ, {"CANVAS_API_KEY": ""}), \
              patch.object(module, "_keyring_token", return_value=None):
