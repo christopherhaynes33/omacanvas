@@ -37,7 +37,7 @@ Choose a bar section when prompted. The default section is the right side.
 
 ## Configure Canvas
 
-Omacanvas needs the base URL of the Canvas installation and a personal access
+Omacanvas needs the HTTPS base URL of the Canvas installation and a personal access
 token. The URL is stored in Omarchy's normal widget settings. The token is
 stored in the system keyring and is scoped to that URL, so separate Canvas
 installations can use separate tokens.
@@ -45,7 +45,7 @@ installations can use separate tokens.
 ### 1. Find the Canvas base URL
 
 Open Canvas in a browser and copy only the origin from the address bar. Do not
-include a course or assignment path.
+include a course or assignment path. Omacanvas accepts HTTPS URLs only.
 
 For example, if a course URL is:
 

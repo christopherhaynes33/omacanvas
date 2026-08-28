@@ -30,14 +30,32 @@ def visibility_path() -> Path:
 def normalize_instance_url(base_url: str) -> str:
     value = base_url.strip().rstrip("/")
     parsed = urlparse(value)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+    if parsed.scheme.lower() != "https" or not parsed.netloc:
         raise RuntimeError(
-            "Canvas URL must include http:// or https:// and a hostname "
+            "Canvas URL must include https:// and a hostname "
             "(for example, https://canvas.example.edu)"
         )
+    if parsed.username is not None or parsed.password is not None:
+        raise RuntimeError("Canvas URL must not include a username or password")
+    try:
+        port = parsed.port
+    except ValueError as error:
+        raise RuntimeError("Canvas URL contains an invalid port") from error
+    if parsed.path not in {"", "/"}:
+        raise RuntimeError("Canvas URL must not include a path")
     if parsed.query or parsed.fragment:
         raise RuntimeError("Canvas URL must not include a query string or fragment")
-    return value
+    hostname = parsed.hostname
+    if not hostname:
+        raise RuntimeError("Canvas URL must include a hostname")
+    try:
+        hostname = hostname.encode("idna").decode("ascii").lower()
+    except UnicodeError as error:
+        raise RuntimeError("Canvas URL contains an invalid hostname") from error
+    if ":" in hostname:
+        hostname = f"[{hostname}]"
+    netloc = hostname if port is None else f"{hostname}:{port}"
+    return f"https://{netloc}"
 
 
 def _load_visibility(path: Path | None = None) -> dict[str, Any]:

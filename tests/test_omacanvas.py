@@ -43,12 +43,22 @@ class MixedRoleClient:
 class CanvasTests(unittest.TestCase):
     def test_normalizes_canvas_url(self):
         self.assertEqual(
-            module.normalize_instance_url(" https://canvas.example.edu/ "),
+            module.normalize_instance_url(" HTTPS://Canvas.Example.EDU/ "),
             "https://canvas.example.edu",
         )
 
     def test_rejects_malformed_canvas_url(self):
-        for value in ("canvas.example.edu", "not a url", "ftp://canvas.example.edu"):
+        for value in (
+            "canvas.example.edu",
+            "not a url",
+            "http://canvas.example.edu",
+            "ftp://canvas.example.edu",
+            "https://user:password@canvas.example.edu",
+            "https://canvas.example.edu/courses/123",
+            "https://canvas.example.edu?account=1",
+            "https://canvas.example.edu#settings",
+            "https://canvas.example.edu:invalid",
+        ):
             with self.subTest(value=value), self.assertRaises(RuntimeError):
                 module.normalize_instance_url(value)
 
