@@ -15,11 +15,47 @@ from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urljoin, urlparse
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 
 SERVICE = "omacanvas"
 VISIBILITY_VERSION = 1
+
+
+class CrossOriginRequestError(RuntimeError):
+    """Raised before an authenticated request can leave the Canvas origin."""
+
+
+def _url_origin(url: str) -> tuple[str, str, int]:
+    parsed = urlparse(url)
+    if parsed.scheme.lower() != "https" or not parsed.hostname:
+        raise CrossOriginRequestError("Canvas API requests must use HTTPS")
+    if parsed.username is not None or parsed.password is not None:
+        raise CrossOriginRequestError("Canvas API requests must not include URL credentials")
+    try:
+        port = parsed.port or 443
+    except ValueError as error:
+        raise CrossOriginRequestError("Canvas API request contains an invalid port") from error
+    return parsed.scheme.lower(), parsed.hostname.lower(), port
+
+
+def _require_same_origin(base_url: str, candidate_url: str) -> str:
+    if _url_origin(base_url) != _url_origin(candidate_url):
+        raise CrossOriginRequestError(
+            "Canvas returned a redirect or pagination link outside the configured origin"
+        )
+    return candidate_url
+
+
+class SameOriginRedirectHandler(HTTPRedirectHandler):
+    def __init__(self, base_url: str):
+        super().__init__()
+        self.base_url = base_url
+
+    def redirect_request(self, request, fp, code, message, headers, new_url):
+        target = urljoin(request.full_url, new_url)
+        _require_same_origin(self.base_url, target)
+        return super().redirect_request(request, fp, code, message, headers, target)
 
 
 def visibility_path() -> Path:
@@ -169,6 +205,7 @@ class CanvasClient:
     def __init__(self, base_url: str, token: str):
         self.base_url = normalize_instance_url(base_url) + "/"
         self.token = token
+        self.opener = build_opener(SameOriginRedirectHandler(self.base_url))
 
     def get_all(self, path: str, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         url = urljoin(self.base_url, path.lstrip("/"))
@@ -176,11 +213,13 @@ class CanvasClient:
             url += "?" + urlencode(params, doseq=True)
         records: list[dict[str, Any]] = []
         while url:
+            _require_same_origin(self.base_url, url)
             request = Request(url, headers={"Authorization": f"Bearer {self.token}", "Accept": "application/json"})
             try:
-                with urlopen(request, timeout=20) as response:
+                with self.opener.open(request, timeout=20) as response:
                     records.extend(json.loads(response.read().decode("utf-8")))
-                    url = _next_link(response.headers.get("Link"))
+                    next_link = _next_link(response.headers.get("Link"))
+                    url = _require_same_origin(self.base_url, urljoin(url, next_link)) if next_link else None
             except HTTPError as error:
                 if error.code in (401, 403):
                     raise RuntimeError("Canvas rejected the API token") from error

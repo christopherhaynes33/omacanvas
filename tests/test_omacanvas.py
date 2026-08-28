@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
+from urllib.request import Request
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 from importlib.machinery import SourceFileLoader
@@ -116,6 +117,34 @@ class CanvasTests(unittest.TestCase):
 
     def test_next_link(self):
         self.assertEqual(module._next_link('<https://canvas.test/p2>; rel="next"'), "https://canvas.test/p2")
+
+    def test_accepts_same_origin_pagination_link(self):
+        self.assertEqual(
+            module._require_same_origin(
+                "https://canvas.example.edu/",
+                "https://canvas.example.edu/api/v1/courses?page=2",
+            ),
+            "https://canvas.example.edu/api/v1/courses?page=2",
+        )
+
+    def test_rejects_cross_origin_pagination_link(self):
+        with self.assertRaisesRegex(module.CrossOriginRequestError, "outside"):
+            module._require_same_origin(
+                "https://canvas.example.edu/",
+                "https://attacker.example/api/v1/courses?page=2",
+            )
+
+    def test_rejects_cross_origin_redirect_before_copying_headers(self):
+        handler = module.SameOriginRedirectHandler("https://canvas.example.edu/")
+        request = Request(
+            "https://canvas.example.edu/api/v1/courses",
+            headers={"Authorization": "Bearer secret-token"},
+        )
+        with self.assertRaises(module.CrossOriginRequestError):
+            handler.redirect_request(
+                request, None, 302, "Found", {},
+                "https://attacker.example/collect",
+            )
 
     def test_excludes_teacher_only_courses_before_fetching_assignments(self):
         client = MixedRoleClient()
