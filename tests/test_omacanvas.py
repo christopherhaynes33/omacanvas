@@ -1,6 +1,7 @@
 import unittest
 from datetime import datetime, timezone
 import os
+import stat
 import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -264,6 +265,28 @@ class CanvasTests(unittest.TestCase):
 
             module.set_course_hidden("https://canvas.example.edu", "20", False, path=path)
             self.assertEqual(module.hidden_courses_for("https://canvas.example.edu", path), {})
+
+    def test_hidden_course_preferences_are_written_privately_and_atomically(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "omacanvas" / "hidden-courses.json"
+            module.set_course_hidden(
+                "https://canvas.example.edu", "20", True,
+                "Orientation", "ORIENT", path,
+            )
+
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+            self.assertEqual(stat.S_IMODE(path.parent.stat().st_mode), 0o700)
+            self.assertEqual(list(path.parent.glob(".hidden-courses.json.*.tmp")), [])
+
+    def test_rejects_symlinked_hidden_course_preferences(self):
+        with TemporaryDirectory() as directory:
+            target = Path(directory) / "target.json"
+            target.write_text('{"version": 1, "instances": {}}', encoding="utf-8")
+            path = Path(directory) / "hidden-courses.json"
+            path.symlink_to(target)
+
+            with self.assertRaisesRegex(RuntimeError, "symbolic link"):
+                module.hidden_courses_for("https://canvas.example.edu", path)
 
 
 if __name__ == "__main__":

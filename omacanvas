@@ -9,6 +9,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 import unicodedata
 from datetime import datetime, timedelta, timezone
@@ -112,6 +113,8 @@ def sanitize_text(value: Any, fallback: str = "") -> str:
 
 def _load_visibility(path: Path | None = None) -> dict[str, Any]:
     path = path or visibility_path()
+    if path.is_symlink():
+        raise RuntimeError("Hidden-course preferences must not be a symbolic link")
     if not path.exists():
         return {"version": VISIBILITY_VERSION, "instances": {}}
     try:
@@ -151,11 +154,29 @@ def set_course_hidden(
         courses.pop(course_key, None)
         if not courses:
             instances.pop(instance_url, None)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + ".tmp")
-    temporary.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    os.chmod(temporary, 0o600)
-    temporary.replace(path)
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(path.parent, 0o700)
+    serialized = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent,
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+            output.write(serialized)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def _keyring_token(base_url: str) -> str | None:
