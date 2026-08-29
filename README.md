@@ -8,7 +8,7 @@ between Student and Teaching views.
 Omacanvas is an independent community project and is not affiliated with,
 endorsed by, or sponsored by Instructure or Canvas LMS.
 
-![Omacanvas Student Assignments, Teaching Overview, and Teaching Courses views](preview-1.0.0.png)
+![Omacanvas Student Assignments, Teaching Overview, and Teaching Courses views](preview.png?v=1.0.0)
 
 The panel provides three views:
 
