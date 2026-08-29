@@ -1,19 +1,20 @@
 # Omacanvas
 
 Omacanvas is a native Omarchy Quickshell bar widget for Canvas LMS. It shows
-current grades and assignments due soon across active courses in which the
-Canvas user has a student enrollment. Teacher-only courses are excluded.
+current grades and assignments due soon for students, plus upcoming assignment
+deadlines and grading counts for teachers. Accounts with both roles can switch
+between Student and Teaching views.
 
 Omacanvas is an independent community project and is not affiliated with,
 endorsed by, or sponsored by Instructure or Canvas LMS.
 
-![Omacanvas Overview, Assignments, and Courses views](preview.png)
+![Omacanvas Student Assignments, Teaching Overview, and Teaching Courses views](preview.png)
 
 The panel provides three views:
 
-- **Overview** — assignment counts and current grades.
-- **Assignments** — work due during the configured date window.
-- **Courses** — per-course grades, assignments, and visibility controls.
+- **Overview** — assignment and course summaries, plus grades or grading counts.
+- **Assignments** — student work or teaching deadlines during the configured window.
+- **Courses** — per-course details, assignments, links, and visibility controls.
 
 ## Requirements
 
@@ -110,22 +111,49 @@ Right-click the Omacanvas bar icon after configuration to refresh immediately.
 
 - Left-click the bar icon to open or close the panel.
 - Right-click the bar icon to refresh Canvas data manually.
+- When both roles are available, select the **STUDENT** or **TEACHING** label
+  at the right side of the header to toggle roles.
 - Select **Overview**, **Assignments**, or **Courses** at the top of the panel.
 - Select an assignment name to open it in Canvas.
 - Select a course name to open its Canvas landing page.
 - Press `1`, `2`, or `3` to select a view while the panel is focused.
+- Press `S` or `T` to select Student or Teaching while the panel is focused.
 - Press Left/Right to change views and Up/Down to scroll.
 - Press `R` or Enter to refresh, and Escape to close the panel.
 
 The widget refreshes every six hours by default and shows assignments due in
 the next 14 days.
 
+### Assignment status and availability
+
+Student assignments use one compact status icon:
+
+- No icon means the assignment is open and not submitted.
+- A checkmark means Canvas reports the assignment as submitted.
+- A lock means Canvas reports the assignment as locked for the current user.
+
+Locked student assignments show their future unlock date when Canvas provides
+one. If Canvas reports the assignment as locked without a future unlock date,
+Omacanvas displays **Locked · No scheduled unlock date**. Lock and submission
+states are informational; selecting the assignment still opens its Canvas URL
+when one is available.
+
+### Teaching view
+
+Teaching displays active courses in which Canvas reports a teacher enrollment.
+It shows upcoming assignment deadlines, Published or Draft assignment status,
+course Published or Unpublished status, and the course's total number of
+submissions needing grading. A lock marks an assignment with a future scheduled
+unlock. Assignments with differentiated dates show the number of availability
+schedules and, when applicable, the earliest upcoming unlock. The teacher view
+is read-only and does not retrieve individual submissions.
+
 ### Hide or restore a course
 
 In **Courses**, use the eye-slash action to hide the selected course. Hidden
-courses are excluded from grades, assignment counts, alerts, and assignment API
-requests. Expand the muted hidden-course row and use the eye action to restore
-a course.
+courses are excluded from assignment counts, alerts, and assignment API
+requests in both roles. Expand the muted hidden-course row and use the eye
+action to restore a course.
 
 Course visibility is stored per Canvas installation in:
 
@@ -197,7 +225,9 @@ $OMACANVAS hide-course COURSE_ID --base-url https://canvas.example.edu \
 $OMACANVAS unhide-course COURSE_ID --base-url https://canvas.example.edu
 ```
 
-The hide and unhide commands are normally easier to use from the Courses view.
+Human-readable `fetch` output is divided into Student and Teaching sections.
+With `--json`, both role payloads are returned under `roles`. The hide and
+unhide commands are normally easier to use from the Courses view.
 
 ## Update, disable, or remove
 
@@ -227,12 +257,16 @@ Omacanvas configuration directory manually if those should also be removed.
 ## Privacy and permissions
 
 Omacanvas sends authenticated HTTPS requests only to the configured Canvas
-installation. It requests active student enrollments, current scores/grades,
-and assignments due within the selected window. Hidden courses skip assignment
-requests. The token is read from the desktop keyring and is never written to
-Omarchy's plain-text configuration. Assignment and course links are opened in
-the default browser only after Omacanvas verifies that they use the configured
-Canvas origin; the API token is not included in browser links.
+installation. It requests active student and teacher enrollments, student
+scores/grades and submission status, teacher grading counts, course publication
+status, and assignments due within the selected window. Assignment data
+includes publication status and Canvas availability dates needed to display
+lock and unlock information. Teacher data is read-only; Omacanvas does not
+retrieve individual submissions or change grades. Hidden courses skip
+assignment requests. The token is read from the desktop keyring and is never
+written to Omarchy's plain-text configuration. Assignment and course links are
+opened in the default browser only after Omacanvas verifies that they use the
+configured Canvas origin; the API token is not included in browser links.
 
 Like every Omarchy shell plugin, Omacanvas runs as user code inside the shell.
 Review third-party plugin source before installation.
@@ -249,8 +283,13 @@ Review third-party plugin source before installation.
   `set-token` again.
 - **The API-token option is missing in Canvas** — the institution may prohibit
   personal tokens; ask its Canvas administrator.
-- **A course is missing** — Omacanvas intentionally displays only active
-  student enrollments. Check the hidden-courses disclosure in the Courses view.
+- **A course is missing** — Omacanvas displays active student and teacher
+  enrollments. Check the selected role and hidden-courses disclosure.
+- **The Student/Teaching toggle is missing** — the role label appears only when
+  Canvas returns both active student and teacher roles. Accounts with one role
+  open directly in that view.
+- **A lock or unlock date looks stale** — right-click the bar icon to refresh;
+  automatic refresh occurs every six hours by default.
 - **Changes do not appear** — right-click the icon, then run
   `omarchy restart shell` if needed.
 

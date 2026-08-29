@@ -25,9 +25,18 @@ Panel {
 
   readonly property var paneNames: ["Overview", "Assignments", "Courses"]
   property int selectedPane: 0
+  property string selectedRole: "student"
   property bool cursorActive: false
   property string selectedCourseId: ""
-  property var payload: ({ fetched_at: "", days: 14, courses: [], hidden_courses: [] })
+  property var payload: ({
+    schema_version: 2,
+    fetched_at: "",
+    days: 14,
+    roles: {
+      student: { available: false, error: "", courses: [], hidden_courses: [] },
+      teacher: { available: false, error: "", courses: [], hidden_courses: [] }
+    }
+  })
   property string errorText: ""
   property string visibilityError: ""
   property bool loading: false
@@ -36,13 +45,30 @@ Panel {
   property bool pendingHiddenState: false
   property bool hiddenCoursesExpanded: false
 
-  readonly property var courses: payload.courses || []
-  readonly property var hiddenCourses: payload.hidden_courses || []
+  readonly property var studentData: payload.roles && payload.roles.student
+    ? payload.roles.student : ({ available: false, error: "", courses: [], hidden_courses: [] })
+  readonly property var teacherData: payload.roles && payload.roles.teacher
+    ? payload.roles.teacher : ({ available: false, error: "", courses: [], hidden_courses: [] })
+  readonly property var activeRoleData: selectedRole === "teacher" ? teacherData : studentData
+  readonly property bool teaching: selectedRole === "teacher"
+  readonly property bool studentRolePresent: !!studentData.available || String(studentData.error || "") !== ""
+  readonly property bool teacherRolePresent: !!teacherData.available || String(teacherData.error || "") !== ""
+  readonly property bool showRoleSwitch: studentRolePresent && teacherRolePresent
+  readonly property string roleError: String(activeRoleData.error || "")
+  readonly property var courses: activeRoleData.courses || []
+  readonly property var hiddenCourses: activeRoleData.hidden_courses || []
   readonly property var assignments: flattenAssignments(courses)
   readonly property var selectedCourse: findSelectedCourse()
   readonly property int selectedCourseIndex: findSelectedCourseIndex()
   readonly property int pendingCount: countAssignments(false)
   readonly property int submittedCount: assignments.length - pendingCount
+  readonly property int draftCount: countDraftAssignments()
+  readonly property int needsGradingCount: {
+    var total = 0
+    for (var i = 0; i < courses.length; i++)
+      total += Math.max(0, Number(courses[i].needs_grading_count || 0))
+    return total
+  }
   readonly property int urgentCount: {
     var total = 0
     var cutoff = Date.now() + 2 * 24 * 60 * 60 * 1000
@@ -77,7 +103,13 @@ Panel {
           id: source.id,
           name: source.name,
           due_at: source.due_at,
+          due_dates: source.due_dates || [],
+          availability_schedules: source.availability_schedules || [],
           submitted: source.submitted,
+          published: source.published,
+          locked_for_user: source.locked_for_user,
+          unlock_at: source.unlock_at,
+          lock_at: source.lock_at,
           html_url: source.html_url,
           course_id: course.id,
           course_name: course.name,
@@ -96,6 +128,32 @@ Panel {
     for (var i = 0; i < assignments.length; i++)
       if (!!assignments[i].submitted === submitted) total++
     return total
+  }
+
+  function countDraftAssignments() {
+    var total = 0
+    for (var i = 0; i < assignments.length; i++)
+      if (assignments[i].published === false) total++
+    return total
+  }
+
+  function ensureSelectedRole() {
+    if (selectedRole === "teacher" && teacherRolePresent) return
+    if (selectedRole === "student" && studentRolePresent) return
+    if (studentRolePresent) selectedRole = "student"
+    else if (teacherRolePresent) selectedRole = "teacher"
+    else selectedRole = "student"
+  }
+
+  function selectRole(role) {
+    if (role !== "student" && role !== "teacher") return
+    if (role === "student" && !studentRolePresent) return
+    if (role === "teacher" && !teacherRolePresent) return
+    selectedRole = role
+    selectedCourseId = ""
+    hiddenCoursesExpanded = false
+    ensureSelectedCourse()
+    if (panelFlick) panelFlick.contentY = 0
   }
 
   function findSelectedCourse() {
@@ -157,6 +215,68 @@ Panel {
     var date = new Date(value)
     if (!isFinite(date.getTime())) return "No due date"
     return date.toLocaleString(Qt.locale(), "ddd MMM d, h:mm AP")
+  }
+
+  function assignmentSubtitle(assignment, includeCourse) {
+    var parts = []
+    if (includeCourse)
+      parts.push(String(assignment.course_code || assignment.course_name || ""))
+    var availability = assignmentAvailabilityLabel(assignment)
+    if (availability !== "") parts.push(availability)
+    parts.push("Due " + dueLabel(assignment.due_at))
+    if (teaching && assignment.published !== null && assignment.published !== undefined)
+      parts.push(assignment.published ? "Published" : "Draft")
+    return parts.filter(function(part) { return part !== "" }).join(" · ")
+  }
+
+  function assignmentLocked(assignment) {
+    if (!assignment) return false
+    if (!teaching) return !!assignment.locked_for_user
+    var schedules = assignment.availability_schedules || []
+    for (var i = 0; i < schedules.length; i++) {
+      var unlock = new Date(schedules[i].unlock_at || "").getTime()
+      if (isFinite(unlock) && unlock > Date.now()) return true
+    }
+    return false
+  }
+
+  function assignmentAvailabilityLabel(assignment) {
+    if (!assignment) return ""
+    if (!teaching) {
+      if (!assignment.locked_for_user) return ""
+      var studentUnlock = new Date(assignment.unlock_at || "").getTime()
+      return isFinite(studentUnlock) && studentUnlock > Date.now()
+        ? "Unlocks " + dueLabel(assignment.unlock_at)
+        : "Locked · No scheduled unlock date"
+    }
+
+    var schedules = assignment.availability_schedules || []
+    var futureUnlocks = []
+    for (var i = 0; i < schedules.length; i++) {
+      var unlock = new Date(schedules[i].unlock_at || "").getTime()
+      if (isFinite(unlock) && unlock > Date.now()) futureUnlocks.push(unlock)
+    }
+    futureUnlocks.sort(function(a, b) { return a - b })
+    if (schedules.length > 1) {
+      var summary = schedules.length + " availability schedules"
+      return futureUnlocks.length > 0
+        ? summary + " · Earliest unlock " + dueLabel(new Date(futureUnlocks[0]).toISOString())
+        : summary
+    }
+    return futureUnlocks.length > 0
+      ? "Scheduled to unlock " + dueLabel(new Date(futureUnlocks[0]).toISOString())
+      : ""
+  }
+
+  function courseStatus(course) {
+    if (!course) return ""
+    if (!teaching) return "Current grade  ·  " + grade(course)
+    var state = String(course.workflow_state || "").toLowerCase()
+    var stateLabel = state === "available" ? "Published"
+      : (state === "unpublished" ? "Unpublished" : "")
+    var count = Math.max(0, Number(course.needs_grading_count || 0))
+    var label = count + " submission" + (count === 1 ? "" : "s") + " need grading"
+    return stateLabel === "" ? label : label + "  ·  " + stateLabel
   }
 
   function fetchedLabel() {
@@ -227,7 +347,11 @@ Panel {
         return
       }
       try {
-        root.payload = JSON.parse(String(statusOutput.text || ""))
+        var nextPayload = JSON.parse(String(statusOutput.text || ""))
+        if (Number(nextPayload.schema_version) !== 2 || !nextPayload.roles)
+          throw new Error("Unsupported Omacanvas data format")
+        root.payload = nextPayload
+        root.ensureSelectedRole()
         root.ensureSelectedCourse()
         root.errorText = ""
       } catch (error) {
@@ -293,11 +417,13 @@ Panel {
     anchors.fill: parent
     bar: root.bar
     text: "\uf0ae"
-    active: root.errorText !== "" || root.urgentCount > 0
+    active: root.errorText !== "" || root.roleError !== "" || root.urgentCount > 0
     tooltipText: root.errorText !== ""
       ? "Omacanvas — " + root.errorText
-      : "Omacanvas — " + root.pendingCount + " assignment" + (root.pendingCount === 1 ? "" : "s")
-        + " due · right-click to refresh"
+      : (root.roleError !== "" ? "Omacanvas — " + root.roleError
+      : "Omacanvas — " + (root.teaching ? "Teaching · " : "Student · ")
+        + root.pendingCount + " assignment" + (root.pendingCount === 1 ? "" : "s")
+        + " due · right-click to refresh")
     onPressed: function(buttonCode) {
       if (buttonCode === Qt.RightButton) root.refreshNow()
       else root.toggle()
@@ -329,6 +455,8 @@ Panel {
       onTabRequested: function(direction) { root.switchPanel(direction) }
       onTextKey: function(text) {
         if (text === "r" || text === "R") root.refreshNow()
+        else if (text === "s" || text === "S") root.selectRole("student")
+        else if (text === "t" || text === "T") root.selectRole("teacher")
         else if (text === "1") root.selectPane(0)
         else if (text === "2") root.selectPane(1)
         else if (text === "3") root.selectPane(2)
@@ -350,18 +478,85 @@ Panel {
           width: panelFlick.width
           spacing: Style.space(12)
 
-          PanelHero {
-            title: "Omacanvas"
-            meta: root.fetchedLabel()
-            detail: root.loading ? "…" : root.pendingCount + " DUE"
-            foreground: root.foreground
-            fontFamily: root.fontFamily
-            iconComponent: Component {
+          Item {
+            id: hero
+            width: parent.width
+            implicitHeight: Math.max(heroIcon.implicitHeight, heroLabels.implicitHeight)
+
+            Text {
+              id: heroIcon
+              anchors.left: parent.left
+              anchors.verticalCenter: parent.verticalCenter
+              text: "\uf0ae"
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.display
+            }
+
+            Column {
+              id: heroLabels
+              anchors.left: heroIcon.right
+              anchors.leftMargin: Style.space(14)
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              spacing: Style.space(2)
+
+              Item {
+                width: parent.width
+                implicitHeight: Math.max(heroTitle.implicitHeight, roleChooser.implicitHeight)
+
+                Text {
+                  id: heroTitle
+                  anchors.left: parent.left
+                  anchors.verticalCenter: parent.verticalCenter
+                  text: "Omacanvas"
+                  color: root.foreground
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.title
+                  font.bold: true
+                }
+
+                Item {
+                  id: roleChooser
+                  visible: root.showRoleSwitch
+                  anchors.right: parent.right
+                  anchors.verticalCenter: parent.verticalCenter
+                  implicitWidth: roleChooserText.implicitWidth
+                  implicitHeight: roleChooserText.implicitHeight
+
+                  Text {
+                    id: roleChooserText
+                    text: root.teaching ? "TEACHING" : "STUDENT"
+                    color: roleChooserMouse.containsMouse ? root.urgent : root.dim
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                    font.bold: true
+                    font.letterSpacing: 1.0
+                  }
+
+                  MouseArea {
+                    id: roleChooserMouse
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.selectRole(root.teaching ? "student" : "teacher")
+                  }
+                }
+              }
+
               Text {
-                text: "\uf0ae"
-                color: root.foreground
+                width: parent.width
+                text: root.fetchedLabel()
+                  + (root.loading ? " · REFRESHING" : (root.teaching
+                    ? " · " + root.assignments.length + " DUE · "
+                      + root.needsGradingCount + " TO GRADE"
+                    : " · " + root.pendingCount + " DUE"))
+                color: root.dim
                 font.family: root.fontFamily
-                font.pixelSize: Style.font.display
+                font.pixelSize: Style.font.caption
+                font.bold: true
+                font.letterSpacing: 1.2
+                elide: Text.ElideRight
               }
             }
           }
@@ -405,10 +600,24 @@ Panel {
 
           Text {
             visible: root.errorText === "" && !root.loading
+              && root.roleError === ""
               && root.courses.length === 0 && root.hiddenCourses.length === 0
             width: parent.width
-            text: "No active student courses were found."
+            text: root.teaching
+              ? "No active courses being taught were found."
+              : "No active student courses were found."
             color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.body
+            wrapMode: Text.WordWrap
+          }
+
+          Text {
+            visible: root.errorText === "" && root.roleError !== ""
+            width: parent.width
+            text: root.roleError
+            textFormat: Text.PlainText
+            color: root.urgent
             font.family: root.fontFamily
             font.pixelSize: Style.font.body
             wrapMode: Text.WordWrap
@@ -427,7 +636,7 @@ Panel {
 
           Column {
             id: overviewPane
-            visible: root.errorText === "" && root.selectedPane === 0
+            visible: root.errorText === "" && root.roleError === "" && root.selectedPane === 0
             width: parent.width
             spacing: Style.space(12)
 
@@ -437,7 +646,12 @@ Panel {
               spacing: Style.space(8)
 
               Repeater {
-                model: [
+                model: root.teaching ? [
+                  { value: root.assignments.length, label: "DUE", alarming: false },
+                  { value: root.urgentCount, label: "48 HOURS", alarming: root.urgentCount > 0 },
+                  { value: root.needsGradingCount, label: "TO GRADE", alarming: root.needsGradingCount > 0 },
+                  { value: root.courses.length, label: "COURSES", alarming: false }
+                ] : [
                   { value: root.pendingCount, label: "DUE", alarming: false },
                   { value: root.urgentCount, label: "48 HOURS", alarming: root.urgentCount > 0 },
                   { value: root.courses.length, label: "COURSES", alarming: false }
@@ -466,7 +680,7 @@ Panel {
             }
 
             PanelSectionHeader {
-              text: "COURSE GRADES"
+              text: root.teaching ? "TEACHING COURSES" : "COURSE GRADES"
               foreground: root.foreground
               fontFamily: root.fontFamily
             }
@@ -506,7 +720,9 @@ Panel {
                   Text {
                     id: overviewGrade
                     anchors.right: parent.right
-                    text: root.grade(modelData)
+                    text: root.teaching
+                      ? String(modelData.needs_grading_count || 0) + " TO GRADE"
+                      : root.grade(modelData)
                     textFormat: Text.PlainText
                     color: root.foreground
                     font.family: root.fontFamily
@@ -540,12 +756,15 @@ Panel {
 
           Column {
             id: assignmentsPane
-            visible: root.errorText === "" && root.selectedPane === 1
+            visible: root.errorText === "" && root.roleError === "" && root.selectedPane === 1
             width: parent.width
             spacing: Style.space(9)
 
             PanelSectionHeader {
-              text: "NEXT " + root.days + " DAYS · " + root.pendingCount + " OPEN · " + root.submittedCount + " SUBMITTED"
+              text: root.teaching
+                ? "NEXT " + root.days + " DAYS · " + root.assignments.length
+                  + " ASSIGNMENTS" + (root.draftCount > 0 ? " · " + root.draftCount + " DRAFT" + (root.draftCount === 1 ? "" : "S") : "")
+                : "NEXT " + root.days + " DAYS · " + root.pendingCount + " OPEN · " + root.submittedCount + " SUBMITTED"
               foreground: root.foreground
               fontFamily: root.fontFamily
             }
@@ -571,9 +790,10 @@ Panel {
                 AssignmentLinkRow {
                   width: parent.width
                   title: String(modelData.name || "Untitled")
-                  subtitle: String(modelData.course_code || modelData.course_name || "")
-                    + " · " + root.dueLabel(modelData.due_at)
+                  subtitle: root.assignmentSubtitle(modelData, true)
                   submitted: !!modelData.submitted
+                  showSubmissionStatus: !root.teaching
+                  locked: root.assignmentLocked(modelData)
                   linkAvailable: root.canvasItemUrl(modelData) !== ""
                   foreground: root.foreground
                   muted: root.dim
@@ -593,7 +813,7 @@ Panel {
 
           Column {
             id: coursesPane
-            visible: root.errorText === "" && root.selectedPane === 2
+            visible: root.errorText === "" && root.roleError === "" && root.selectedPane === 2
             width: parent.width
             spacing: Style.space(10)
 
@@ -700,7 +920,7 @@ Panel {
             Text {
               visible: !!root.selectedCourse
               width: parent.width
-              text: root.selectedCourse ? "Current grade  ·  " + root.grade(root.selectedCourse) : ""
+              text: root.courseStatus(root.selectedCourse)
               textFormat: Text.PlainText
               color: root.dim
               font.family: root.fontFamily
@@ -713,6 +933,7 @@ Panel {
               text: "UPCOMING ASSIGNMENTS"
               foreground: root.foreground
               fontFamily: root.fontFamily
+              topPadding: Math.ceil(fontSize * 0.15) + Style.space(4)
             }
 
             Text {
@@ -736,8 +957,10 @@ Panel {
                 AssignmentLinkRow {
                   width: parent.width
                   title: String(modelData.name || "Untitled")
-                  subtitle: root.dueLabel(modelData.due_at)
+                  subtitle: root.assignmentSubtitle(modelData, false)
                   submitted: !!modelData.submitted
+                  showSubmissionStatus: !root.teaching
+                  locked: root.assignmentLocked(modelData)
                   linkAvailable: root.canvasItemUrl(modelData) !== ""
                   foreground: root.foreground
                   muted: root.dim
@@ -774,7 +997,7 @@ Panel {
             Text {
               visible: root.hiddenCoursesExpanded && root.hiddenCourses.length > 0
               width: parent.width
-              text: "Hidden courses are excluded from grades, assignments, counts, alerts, and assignment API requests."
+              text: "Hidden courses are excluded from assignments, counts, alerts, and assignment API requests."
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
@@ -851,7 +1074,8 @@ Panel {
 
           Text {
             width: parent.width
-            text: "Right-click the bar icon or press R to refresh · ←/→ changes views"
+            text: "Right-click or press R to refresh · ←/→ changes views"
+              + (root.showRoleSwitch ? " · S/T changes role" : "")
             color: root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption

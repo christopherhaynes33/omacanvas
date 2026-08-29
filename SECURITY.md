@@ -4,10 +4,10 @@
 
 Security fixes are provided for the latest released version of Omacanvas.
 
-| Version | Supported |
+| Release | Supported |
 | --- | --- |
-| 0.6.x | Yes |
-| Earlier versions | No |
+| Latest release | Yes |
+| Older releases | No |
 
 ## Reporting a vulnerability
 

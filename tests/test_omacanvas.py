@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
+from urllib.error import HTTPError
 from urllib.request import Request
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
@@ -18,11 +19,15 @@ class FakeClient:
     base_url = "https://canvas.test/"
 
     def get_all(self, path, params=None):
-        if path == "api/v1/users/self/courses":
+        if path == "api/v1/courses":
+            if params["enrollment_type"] != "student":
+                return []
             return [{"id": 1, "name": "Software Engineering", "course_code": "CSC3400",
                      "enrollments": [{"type": "student", "computed_current_score": 95.5}]}]
         return [{"id": 2, "name": "In range", "due_at": "2026-09-01T15:00:00Z",
-                 "submission": {"submitted_at": None}, "html_url": "https://canvas.test/a/2"},
+                 "submission": {"submitted_at": None}, "locked_for_user": True,
+                 "unlock_at": "2026-08-30T12:00:00Z",
+                 "html_url": "https://canvas.test/a/2"},
                 {"id": 3, "name": "Too late", "due_at": "2026-09-20T15:00:00Z", "submission": {}}]
 
 
@@ -36,13 +41,66 @@ class MixedRoleClient:
     def get_all(self, path, params=None):
         self.requested_paths.append(path)
         self.requested_params.append(params)
-        if path == "api/v1/users/self/courses":
+        if path == "api/v1/courses":
             return [
                 {"id": 10, "name": "Course I Teach",
+                 "needs_grading_count": 3,
                  "enrollments": [{"type": "teacher"}]},
                 {"id": 20, "name": "Course I Take",
                  "enrollments": [{"type": "StudentEnrollment", "computed_current_grade": "A"}]},
             ]
+        return []
+
+
+class TeacherClient:
+    base_url = "https://canvas.test/"
+
+    def __init__(self):
+        self.requests = []
+
+    def get_all(self, path, params=None):
+        self.requests.append((path, params))
+        if path == "api/v1/courses":
+            if params["enrollment_type"] != "teacher":
+                return []
+            return [{
+                "id": 30,
+                "name": "Human Computer Interaction",
+                "course_code": "CSC4400",
+                "workflow_state": "available",
+                "needs_grading_count": 7,
+                "enrollments": [{"type": "TeacherEnrollment"}],
+            }]
+        return [
+            {
+                "id": 31,
+                "name": "Prototype Review",
+                "due_at": "2026-09-01T15:00:00Z",
+                "all_dates": [
+                    {"due_at": "2026-08-20T15:00:00Z"},
+                    {"title": "Section One", "due_at": "2026-09-01T15:00:00Z",
+                     "unlock_at": "2026-08-30T12:00:00Z"},
+                    {"title": "Section Two", "due_at": "2026-09-03T15:00:00Z",
+                     "unlock_at": "2026-08-31T12:00:00Z"},
+                ],
+                "published": False,
+                "html_url": "https://canvas.test/courses/30/assignments/31",
+            },
+            {
+                "id": 32,
+                "name": "Too late",
+                "due_at": "2026-09-20T15:00:00Z",
+                "published": True,
+            },
+        ]
+
+
+class PermissionLimitedClient:
+    base_url = "https://canvas.test/"
+
+    def get_all(self, path, params=None):
+        if path == "api/v1/courses" and params["enrollment_type"] == "teacher":
+            raise module.CanvasPermissionError("Canvas denied access to teaching data")
         return []
 
 
@@ -69,6 +127,14 @@ class FakeOpener:
         if not self.responses:
             raise AssertionError("Unexpected API request")
         return self.responses.pop(0)
+
+
+class RaisingOpener:
+    def __init__(self, error):
+        self.error = error
+
+    def open(self, _request, timeout=None):
+        raise self.error
 
 
 class CanvasTests(unittest.TestCase):
@@ -206,15 +272,66 @@ class CanvasTests(unittest.TestCase):
 
     def test_collects_only_assignments_in_window(self):
         data = module.collect(FakeClient(), 14, datetime(2026, 8, 27, tzinfo=timezone.utc))
-        self.assertEqual(len(data["courses"]), 1)
-        self.assertEqual([a["name"] for a in data["courses"][0]["assignments"]], ["In range"])
+        student = data["roles"]["student"]
+        self.assertEqual(data["schema_version"], 2)
+        self.assertEqual(len(student["courses"]), 1)
+        self.assertEqual([a["name"] for a in student["courses"][0]["assignments"]], ["In range"])
         self.assertEqual(
-            data["courses"][0]["assignments"][0]["html_url"],
+            student["courses"][0]["assignments"][0]["html_url"],
             "https://canvas.test/a/2",
         )
         self.assertEqual(
-            data["courses"][0]["html_url"],
+            student["courses"][0]["html_url"],
             "https://canvas.test/courses/1",
+        )
+        assignment = student["courses"][0]["assignments"][0]
+        self.assertTrue(assignment["locked_for_user"])
+        self.assertEqual(assignment["unlock_at"], "2026-08-30T12:00:00+00:00")
+        self.assertFalse(data["roles"]["teacher"]["available"])
+
+    def test_collects_teacher_courses_dates_status_and_grading_count(self):
+        client = TeacherClient()
+        data = module.collect(
+            client, 14, datetime(2026, 8, 27, tzinfo=timezone.utc),
+        )
+        teacher = data["roles"]["teacher"]
+        course = teacher["courses"][0]
+        assignment = course["assignments"][0]
+
+        self.assertTrue(teacher["available"])
+        self.assertEqual(course["needs_grading_count"], 7)
+        self.assertEqual(course["workflow_state"], "available")
+        self.assertEqual(assignment["name"], "Prototype Review")
+        self.assertEqual(
+            assignment["due_dates"],
+            ["2026-09-01T15:00:00+00:00", "2026-09-03T15:00:00+00:00"],
+        )
+        self.assertEqual(len(assignment["availability_schedules"]), 2)
+        self.assertEqual(
+            assignment["availability_schedules"][0]["unlock_at"],
+            "2026-08-30T12:00:00+00:00",
+        )
+        self.assertFalse(assignment["published"])
+        teacher_course_request = next(
+            params for path, params in client.requests
+            if path == "api/v1/courses" and params["enrollment_type"] == "teacher"
+        )
+        assignment_request = next(
+            params for path, params in client.requests
+            if path == "api/v1/courses/30/assignments"
+        )
+        self.assertEqual(teacher_course_request["include[]"], ["needs_grading_count"])
+        self.assertEqual(assignment_request["include[]"], ["all_dates"])
+
+    def test_teacher_permission_failure_does_not_discard_student_role(self):
+        data = module.collect(
+            PermissionLimitedClient(), 14, datetime(2026, 8, 27, tzinfo=timezone.utc),
+        )
+
+        self.assertEqual(data["roles"]["student"]["error"], "")
+        self.assertEqual(
+            data["roles"]["teacher"]["error"],
+            "Canvas denied access to teaching data",
         )
 
     def test_next_link(self):
@@ -287,13 +404,37 @@ class CanvasTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "allowed duration"):
             client.get_all("api/v1/courses")
 
-    def test_excludes_teacher_only_courses_before_fetching_assignments(self):
+    def test_distinguishes_authentication_and_permission_failures(self):
+        for status, expected in (
+            (401, module.CanvasAuthenticationError),
+            (403, module.CanvasPermissionError),
+        ):
+            error = HTTPError(
+                "https://canvas.example.edu/api/v1/courses",
+                status, "failure", {}, None,
+            )
+            client = module.CanvasClient(
+                "https://canvas.example.edu", "token",
+                opener=RaisingOpener(error), clock=lambda: 0,
+            )
+            with self.subTest(status=status), self.assertRaises(expected):
+                client.get_all("api/v1/courses")
+
+    def test_separates_student_and_teacher_courses(self):
         client = MixedRoleClient()
         data = module.collect(client, 14, datetime(2026, 8, 27, tzinfo=timezone.utc))
 
-        self.assertEqual([course["name"] for course in data["courses"]], ["Course I Take"])
+        self.assertEqual(
+            [course["name"] for course in data["roles"]["student"]["courses"]],
+            ["Course I Take"],
+        )
+        self.assertEqual(
+            [course["name"] for course in data["roles"]["teacher"]["courses"]],
+            ["Course I Teach"],
+        )
         self.assertEqual(client.requested_params[0]["enrollment_type"], "student")
-        self.assertNotIn("api/v1/courses/10/assignments", client.requested_paths)
+        self.assertEqual(client.requested_params[2]["enrollment_type"], "teacher")
+        self.assertIn("api/v1/courses/10/assignments", client.requested_paths)
         self.assertIn("api/v1/courses/20/assignments", client.requested_paths)
 
     def test_hidden_course_skips_assignment_request(self):
@@ -303,9 +444,22 @@ class CanvasTests(unittest.TestCase):
             hidden_course_ids={"20"},
         )
 
-        self.assertEqual(data["courses"], [])
-        self.assertEqual([course["id"] for course in data["hidden_courses"]], [20])
+        student = data["roles"]["student"]
+        self.assertEqual(student["courses"], [])
+        self.assertEqual([course["id"] for course in student["hidden_courses"]], [20])
         self.assertNotIn("api/v1/courses/20/assignments", client.requested_paths)
+
+    def test_hidden_teacher_course_skips_assignment_request(self):
+        client = MixedRoleClient()
+        data = module.collect(
+            client, 14, datetime(2026, 8, 27, tzinfo=timezone.utc),
+            hidden_course_ids={"10"},
+        )
+
+        teacher = data["roles"]["teacher"]
+        self.assertEqual(teacher["courses"], [])
+        self.assertEqual([course["id"] for course in teacher["hidden_courses"]], [10])
+        self.assertNotIn("api/v1/courses/10/assignments", client.requested_paths)
 
     def test_hidden_course_preferences_are_scoped_by_canvas_url(self):
         with TemporaryDirectory() as directory:

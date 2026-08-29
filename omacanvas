@@ -23,6 +23,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 
 SERVICE = "omacanvas"
+PAYLOAD_VERSION = 2
 VISIBILITY_VERSION = 1
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_PAGES = 200
@@ -33,6 +34,14 @@ REQUEST_TIMEOUT_SECONDS = 20
 
 class CrossOriginRequestError(RuntimeError):
     """Raised before an authenticated request can leave the Canvas origin."""
+
+
+class CanvasAuthenticationError(RuntimeError):
+    """Raised when Canvas rejects the configured API token."""
+
+
+class CanvasPermissionError(RuntimeError):
+    """Raised when a valid token cannot access a Canvas resource."""
 
 
 def _url_origin(url: str) -> tuple[str, str, int]:
@@ -303,8 +312,12 @@ class CanvasClient:
                     next_link = _next_link(response.headers.get("Link"))
                     url = _require_same_origin(self.base_url, urljoin(url, next_link)) if next_link else None
             except HTTPError as error:
-                if error.code in (401, 403):
-                    raise RuntimeError("Canvas rejected the API token") from error
+                if error.code == 401:
+                    raise CanvasAuthenticationError("Canvas rejected the API token") from error
+                if error.code == 403:
+                    raise CanvasPermissionError(
+                        "Canvas denied access to data for this role"
+                    ) from error
                 raise RuntimeError(f"Canvas API returned HTTP {error.code}") from error
             except (URLError, TimeoutError, UnicodeDecodeError, json.JSONDecodeError) as error:
                 raise RuntimeError(f"Could not reach Canvas: {error}") from error
@@ -321,37 +334,98 @@ def _next_link(header: str | None) -> str | None:
     return None
 
 
-def parse_time(value: str | None) -> datetime | None:
-    if not value:
+def parse_time(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value:
         return None
-    return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
+    except (TypeError, ValueError):
+        return None
 
 
-def collect(
+def iso_time(value: Any) -> str | None:
+    parsed = parse_time(value)
+    return parsed.isoformat() if parsed is not None else None
+
+
+def assignment_schedules(
+    assignment: dict[str, Any],
+    now: datetime,
+    cutoff: datetime,
+    include_all_dates: bool,
+) -> list[dict[str, Any]]:
+    date_records: list[dict[str, Any]] = []
+    if include_all_dates and isinstance(assignment.get("all_dates"), list):
+        date_records = [
+            item for item in assignment["all_dates"] if isinstance(item, dict)
+        ]
+    if not any(parse_time(item.get("due_at")) for item in date_records):
+        date_records = [assignment]
+
+    schedules = []
+    seen = set()
+    for item in date_records:
+        due = parse_time(item.get("due_at"))
+        if due is None or not now <= due <= cutoff:
+            continue
+        schedule = {
+            "due_at": due.isoformat(),
+            "unlock_at": iso_time(item.get("unlock_at")),
+            "lock_at": iso_time(item.get("lock_at")),
+            "title": sanitize_text(item.get("title")) or None,
+        }
+        key = tuple(schedule.values())
+        if key not in seen:
+            schedules.append(schedule)
+            seen.add(key)
+    schedules.sort(key=lambda item: (
+        item["due_at"], item["unlock_at"] or "", item["title"] or "",
+    ))
+    return schedules
+
+
+def empty_role_payload(error: str = "") -> dict[str, Any]:
+    return {
+        "available": False,
+        "error": error,
+        "courses": [],
+        "hidden_courses": [],
+    }
+
+
+def collect_role(
     client: CanvasClient,
+    role: str,
     days: int = 14,
     now: datetime | None = None,
     hidden_course_ids: set[str] | None = None,
 ) -> dict[str, Any]:
+    if role not in {"student", "teacher"}:
+        raise ValueError(f"Unsupported Canvas role: {role}")
     now = now or datetime.now(timezone.utc)
     cutoff = now + timedelta(days=days)
     hidden_course_ids = hidden_course_ids or set()
-    courses = client.get_all("api/v1/users/self/courses", {
-        "enrollment_state": "active", "enrollment_type": "student",
-        "include[]": ["total_scores"], "per_page": 100,
+    include = "total_scores" if role == "student" else "needs_grading_count"
+    courses = client.get_all("api/v1/courses", {
+        "enrollment_state": "active", "enrollment_type": role,
+        "include[]": [include], "per_page": 100,
     })
     result_courses = []
     hidden_courses = []
+    enrollment_types = {
+        "student": {"student", "studentenrollment"},
+        "teacher": {"teacher", "teacherenrollment"},
+    }[role]
     for course in courses:
         if not course.get("id") or course.get("access_restricted_by_date"):
             continue
         enrollments = course.get("enrollments") or []
         enrollment = next(
             (item for item in enrollments
-             if str(item.get("type", "")).lower() in {"student", "studentenrollment"}),
+             if str(item.get("type", "")).lower() in enrollment_types),
             None,
         )
-        if enrollment is None:
+        if enrollments and enrollment is None:
             continue
         course_name = sanitize_text(course.get("name"), "Unnamed course")
         course_code = sanitize_text(course.get("course_code"))
@@ -361,46 +435,117 @@ def collect(
                 "code": course_code,
             })
             continue
+        assignment_includes = ["submission"] if role == "student" else ["all_dates"]
         assignments = client.get_all(f"api/v1/courses/{course['id']}/assignments", {
-            "include[]": ["submission"], "order_by": "due_at", "per_page": 100,
+            "include[]": assignment_includes, "order_by": "due_at", "per_page": 100,
         })
         upcoming = []
         for assignment in assignments:
-            due = parse_time(assignment.get("due_at"))
-            if due and now <= due <= cutoff:
-                submission = assignment.get("submission") or {}
-                upcoming.append({
-                    "id": assignment.get("id"),
-                    "name": sanitize_text(assignment.get("name"), "Untitled"),
-                    "due_at": due.isoformat(), "submitted": submission.get("submitted_at") is not None,
-                    "html_url": validated_canvas_web_url(
-                        client.base_url, assignment.get("html_url"),
-                    ),
-                })
+            schedules = assignment_schedules(
+                assignment, now, cutoff, include_all_dates=role == "teacher",
+            )
+            if not schedules:
+                continue
+            due_dates = sorted({schedule["due_at"] for schedule in schedules})
+            submission = assignment.get("submission") or {}
+            published = assignment.get("published")
+            upcoming.append({
+                "id": assignment.get("id"),
+                "name": sanitize_text(assignment.get("name"), "Untitled"),
+                "due_at": due_dates[0],
+                "due_dates": due_dates,
+                "availability_schedules": schedules,
+                "submitted": role == "student" and submission.get("submitted_at") is not None,
+                "published": published if isinstance(published, bool) else None,
+                "locked_for_user": role == "student" and assignment.get("locked_for_user") is True,
+                "unlock_at": iso_time(assignment.get("unlock_at")),
+                "lock_at": iso_time(assignment.get("lock_at")),
+                "html_url": validated_canvas_web_url(
+                    client.base_url, assignment.get("html_url"),
+                ),
+            })
+        upcoming.sort(key=lambda item: item["due_at"])
+        current_score = enrollment.get("computed_current_score") if enrollment else None
+        current_grade = enrollment.get("computed_current_grade") if enrollment else None
+        current_grade = (
+            sanitize_text(current_grade) or None if role == "student" else None
+        )
+        needs_grading = course.get("needs_grading_count", 0)
+        if not isinstance(needs_grading, int) or isinstance(needs_grading, bool):
+            needs_grading = 0
         result_courses.append({
             "id": course["id"], "name": course_name,
             "code": course_code,
             "html_url": canvas_course_web_url(client.base_url, course["id"]),
-            "current_score": enrollment.get("computed_current_score"),
-            "current_grade": sanitize_text(enrollment.get("computed_current_grade")) or None,
+            "workflow_state": sanitize_text(course.get("workflow_state")) or None,
+            "current_score": current_score if role == "student" else None,
+            "current_grade": current_grade,
+            "needs_grading_count": needs_grading if role == "teacher" else 0,
             "assignments": upcoming,
         })
     result_courses.sort(key=lambda item: item["name"].lower())
     hidden_courses.sort(key=lambda item: item["name"].lower())
     return {
-        "fetched_at": now.isoformat(), "days": days,
-        "courses": result_courses, "hidden_courses": hidden_courses,
+        "available": bool(result_courses or hidden_courses),
+        "error": "",
+        "courses": result_courses,
+        "hidden_courses": hidden_courses,
+    }
+
+
+def collect(
+    client: CanvasClient,
+    days: int = 14,
+    now: datetime | None = None,
+    hidden_course_ids: set[str] | None = None,
+) -> dict[str, Any]:
+    now = now or datetime.now(timezone.utc)
+    roles = {}
+    for role in ("student", "teacher"):
+        try:
+            roles[role] = collect_role(
+                client, role, days, now, hidden_course_ids,
+            )
+        except CanvasPermissionError as error:
+            roles[role] = empty_role_payload(str(error))
+    return {
+        "schema_version": PAYLOAD_VERSION,
+        "fetched_at": now.isoformat(),
+        "days": days,
+        "roles": roles,
     }
 
 
 def print_terminal(data: dict[str, Any]) -> None:
     print(f"Canvas — assignments due in the next {data['days']} days")
-    for course in data["courses"]:
-        grade = course["current_grade"] or (f"{course['current_score']:.1f}%" if isinstance(course["current_score"], (int, float)) else "—")
-        print(f"\n{course['name']} ({grade})")
-        for assignment in course["assignments"]:
-            status = "submitted" if assignment["submitted"] else "TODO"
-            print(f"  [{status:9}] {assignment['due_at'][:10]}  {assignment['name']}")
+    for role, heading in (("student", "Student"), ("teacher", "Teaching")):
+        role_data = data["roles"][role]
+        print(f"\n{heading}")
+        if role_data["error"]:
+            print(f"  {role_data['error']}")
+            continue
+        if not role_data["courses"]:
+            print("  No active courses found.")
+            continue
+        for course in role_data["courses"]:
+            if role == "student":
+                detail = course["current_grade"] or (
+                    f"{course['current_score']:.1f}%"
+                    if isinstance(course["current_score"], (int, float)) else "—"
+                )
+            else:
+                detail = f"{course['needs_grading_count']} need grading"
+            print(f"\n{course['name']} ({detail})")
+            for assignment in course["assignments"]:
+                if role == "student":
+                    status = "submitted" if assignment["submitted"] else "TODO"
+                else:
+                    status = (
+                        "published" if assignment["published"] is True
+                        else "draft" if assignment["published"] is False
+                        else "unknown"
+                    )
+                print(f"  [{status:9}] {assignment['due_at'][:10]}  {assignment['name']}")
 
 
 def main() -> int:

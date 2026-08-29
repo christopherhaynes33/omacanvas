@@ -7,6 +7,8 @@ Item {
   required property string title
   required property string subtitle
   required property bool submitted
+  property bool showSubmissionStatus: true
+  property bool locked: false
   property bool linkAvailable: false
   property color foreground
   property color muted
@@ -24,16 +26,37 @@ Item {
     anchors.verticalCenter: parent.verticalCenter
     spacing: Style.space(4)
 
-    Text {
+    Item {
       width: parent.width
-      text: (row.submitted ? "✓  " : "•  ") + row.title
-      textFormat: Text.PlainText
-      color: linkArea.containsMouse
-        ? row.accent : (row.submitted ? row.muted : row.foreground)
-      font.family: row.fontFamily
-      font.pixelSize: Style.font.body
-      font.bold: !row.submitted
-      wrapMode: Text.WordWrap
+      implicitHeight: Math.max(statusIcon.implicitHeight, titleText.implicitHeight)
+
+      Text {
+        id: statusIcon
+        visible: row.locked || (row.showSubmissionStatus && row.submitted)
+        anchors.left: parent.left
+        anchors.verticalCenter: parent.verticalCenter
+        text: row.locked ? "\uf023" : "✓"
+        textFormat: Text.PlainText
+        color: linkArea.containsMouse ? row.accent : row.muted
+        font.family: row.fontFamily
+        font.pixelSize: Math.max(8, Style.font.body - 2)
+      }
+
+      Text {
+        id: titleText
+        anchors.left: statusIcon.visible ? statusIcon.right : parent.left
+        anchors.leftMargin: statusIcon.visible ? Style.space(5) : 0
+        anchors.right: parent.right
+        text: row.title
+        textFormat: Text.PlainText
+        color: linkArea.containsMouse
+          ? row.accent
+          : ((row.showSubmissionStatus && row.submitted) || row.locked ? row.muted : row.foreground)
+        font.family: row.fontFamily
+        font.pixelSize: Style.font.body
+        font.bold: !row.showSubmissionStatus || !row.submitted
+        wrapMode: Text.WordWrap
+      }
     }
 
     Text {
