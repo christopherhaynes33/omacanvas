@@ -44,6 +44,7 @@ Panel {
   property var pendingVisibilityCourse: null
   property bool pendingHiddenState: false
   property bool hiddenCoursesExpanded: false
+  property bool submittedAssignmentsExpanded: false
 
   readonly property var studentData: payload.roles && payload.roles.student
     ? payload.roles.student : ({ available: false, error: "", courses: [], hidden_courses: [] })
@@ -58,8 +59,19 @@ Panel {
   readonly property var courses: activeRoleData.courses || []
   readonly property var hiddenCourses: activeRoleData.hidden_courses || []
   readonly property var assignments: flattenAssignments(courses)
+  readonly property var openAssignments: filterAssignments(assignments, false)
+  readonly property var submittedAssignments: filterAssignments(assignments, true)
   readonly property var selectedCourse: findSelectedCourse()
   readonly property int selectedCourseIndex: findSelectedCourseIndex()
+  readonly property var selectedCourseAssignments: selectedCourse
+    ? (selectedCourse.assignments || []) : []
+  readonly property var selectedCourseOpenAssignments:
+    filterAssignments(selectedCourseAssignments, false)
+  readonly property var selectedCourseSubmittedAssignments:
+    filterAssignments(selectedCourseAssignments, true)
+  readonly property var nextAssignment: teaching
+    ? (assignments.length > 0 ? assignments[0] : null)
+    : (openAssignments.length > 0 ? openAssignments[0] : null)
   readonly property int pendingCount: countAssignments(false)
   readonly property int submittedCount: assignments.length - pendingCount
   readonly property int draftCount: countDraftAssignments()
@@ -80,6 +92,7 @@ Panel {
   }
 
   onHiddenCoursesChanged: if (hiddenCourses.length === 0) hiddenCoursesExpanded = false
+  onSubmittedCountChanged: if (submittedCount === 0) submittedAssignmentsExpanded = false
 
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
@@ -130,6 +143,13 @@ Panel {
     return total
   }
 
+  function filterAssignments(assignmentList, submitted) {
+    var rows = []
+    for (var i = 0; i < assignmentList.length; i++)
+      if (!!assignmentList[i].submitted === submitted) rows.push(assignmentList[i])
+    return rows
+  }
+
   function countDraftAssignments() {
     var total = 0
     for (var i = 0; i < assignments.length; i++)
@@ -152,6 +172,7 @@ Panel {
     selectedRole = role
     selectedCourseId = ""
     hiddenCoursesExpanded = false
+    submittedAssignmentsExpanded = false
     ensureSelectedCourse()
     if (panelFlick) panelFlick.contentY = 0
   }
@@ -399,6 +420,7 @@ Panel {
 
   onOpenedChanged: if (opened) {
     cursorActive = false
+    submittedAssignmentsExpanded = false
     if (panelFlick) panelFlick.contentY = 0
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
@@ -741,10 +763,10 @@ Panel {
             }
 
             Text {
-              visible: root.assignments.length > 0
+              visible: !!root.nextAssignment
               width: parent.width
-              text: root.assignments.length > 0
-                ? "Next: " + root.dueLabel(root.assignments[0].due_at) + " — " + root.assignments[0].name
+              text: root.nextAssignment
+                ? "Next: " + root.dueLabel(root.nextAssignment.due_at) + " — " + root.nextAssignment.name
                 : ""
               textFormat: Text.PlainText
               color: root.dim
@@ -764,15 +786,19 @@ Panel {
               text: root.teaching
                 ? "NEXT " + root.days + " DAYS · " + root.assignments.length
                   + " ASSIGNMENTS" + (root.draftCount > 0 ? " · " + root.draftCount + " DRAFT" + (root.draftCount === 1 ? "" : "S") : "")
-                : "NEXT " + root.days + " DAYS · " + root.pendingCount + " OPEN · " + root.submittedCount + " SUBMITTED"
+                : "NEXT " + root.days + " DAYS · " + root.pendingCount + " OPEN"
               foreground: root.foreground
               fontFamily: root.fontFamily
             }
 
             Text {
-              visible: root.assignments.length === 0
+              visible: root.teaching
+                ? root.assignments.length === 0
+                : root.openAssignments.length === 0
               width: parent.width
-              text: "No assignments are due in this window."
+              text: !root.teaching && root.submittedCount > 0
+                ? "All upcoming assignments are submitted."
+                : "No assignments are due in this window."
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.body
@@ -780,7 +806,7 @@ Panel {
             }
 
             Repeater {
-              model: root.assignments
+              model: root.teaching ? root.assignments : root.openAssignments
               Column {
                 required property var modelData
                 required property int index
@@ -802,7 +828,56 @@ Panel {
                   onActivated: root.openAssignment(modelData)
                 }
                 PanelSeparator {
-                  visible: index < root.assignments.length - 1
+                  visible: index < (root.teaching
+                    ? root.assignments.length : root.openAssignments.length) - 1
+                  width: parent.width
+                  foreground: root.foreground
+                  opacity: 0.18
+                }
+              }
+            }
+
+            Button {
+              visible: !root.teaching && root.submittedCount > 0
+              width: parent.width
+              text: root.submittedCount + " submitted assignment"
+                + (root.submittedCount === 1 ? "" : "s")
+              iconText: root.submittedAssignmentsExpanded ? "\uf078" : "\uf054"
+              bordered: false
+              leftAlign: true
+              foreground: root.dim
+              fontFamily: root.fontFamily
+              fontSize: Style.font.caption
+              iconSize: Style.font.caption
+              horizontalPadding: 0
+              onClicked: root.submittedAssignmentsExpanded = !root.submittedAssignmentsExpanded
+            }
+
+            Repeater {
+              model: !root.teaching && root.submittedAssignmentsExpanded
+                ? root.submittedAssignments : []
+              Column {
+                required property var modelData
+                required property int index
+                width: assignmentsPane.width
+                spacing: Style.space(4)
+
+                AssignmentLinkRow {
+                  width: parent.width
+                  title: String(modelData.name || "Untitled")
+                  subtitle: root.assignmentSubtitle(modelData, true)
+                  submitted: true
+                  showSubmissionStatus: true
+                  locked: root.assignmentLocked(modelData)
+                  linkAvailable: root.canvasItemUrl(modelData) !== ""
+                  foreground: root.foreground
+                  muted: root.dim
+                  accent: root.urgent
+                  fontFamily: root.fontFamily
+                  onActivated: root.openAssignment(modelData)
+                }
+                PanelSeparator {
+                  visible: index < root.submittedAssignments.length - 1
                   width: parent.width
                   foreground: root.foreground
                   opacity: 0.18
@@ -930,16 +1005,23 @@ Panel {
 
             PanelSectionHeader {
               visible: !!root.selectedCourse
-              text: "UPCOMING ASSIGNMENTS"
+              text: root.teaching
+                ? "UPCOMING ASSIGNMENTS"
+                : "UPCOMING ASSIGNMENTS · "
+                  + root.selectedCourseOpenAssignments.length + " OPEN"
               foreground: root.foreground
               fontFamily: root.fontFamily
               topPadding: Math.ceil(fontSize * 0.15) + Style.space(4)
             }
 
             Text {
-              visible: root.selectedCourse && (root.selectedCourse.assignments || []).length === 0
+              visible: root.selectedCourse && (root.teaching
+                ? root.selectedCourseAssignments.length === 0
+                : root.selectedCourseOpenAssignments.length === 0)
               width: parent.width
-              text: "No assignments due in the next " + root.days + " days."
+              text: !root.teaching && root.selectedCourseSubmittedAssignments.length > 0
+                ? "All upcoming assignments are submitted."
+                : "No assignments due in the next " + root.days + " days."
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.body
@@ -947,7 +1029,8 @@ Panel {
             }
 
             Repeater {
-              model: root.selectedCourse ? (root.selectedCourse.assignments || []) : []
+              model: root.teaching
+                ? root.selectedCourseAssignments : root.selectedCourseOpenAssignments
               Column {
                 required property var modelData
                 required property int index
@@ -969,8 +1052,59 @@ Panel {
                   onActivated: root.openAssignment(modelData)
                 }
                 PanelSeparator {
-                  visible: root.selectedCourse
-                    && index < (root.selectedCourse.assignments || []).length - 1
+                  visible: index < (root.teaching
+                    ? root.selectedCourseAssignments.length
+                    : root.selectedCourseOpenAssignments.length) - 1
+                  width: parent.width
+                  foreground: root.foreground
+                  opacity: 0.18
+                }
+              }
+            }
+
+            Button {
+              visible: !root.teaching
+                && root.selectedCourseSubmittedAssignments.length > 0
+              width: parent.width
+              text: root.selectedCourseSubmittedAssignments.length
+                + " submitted assignment"
+                + (root.selectedCourseSubmittedAssignments.length === 1 ? "" : "s")
+              iconText: root.submittedAssignmentsExpanded ? "\uf078" : "\uf054"
+              bordered: false
+              leftAlign: true
+              foreground: root.dim
+              fontFamily: root.fontFamily
+              fontSize: Style.font.caption
+              iconSize: Style.font.caption
+              horizontalPadding: 0
+              onClicked: root.submittedAssignmentsExpanded = !root.submittedAssignmentsExpanded
+            }
+
+            Repeater {
+              model: !root.teaching && root.submittedAssignmentsExpanded
+                ? root.selectedCourseSubmittedAssignments : []
+              Column {
+                required property var modelData
+                required property int index
+                width: coursesPane.width
+                spacing: Style.space(4)
+
+                AssignmentLinkRow {
+                  width: parent.width
+                  title: String(modelData.name || "Untitled")
+                  subtitle: root.assignmentSubtitle(modelData, false)
+                  submitted: true
+                  showSubmissionStatus: true
+                  locked: root.assignmentLocked(modelData)
+                  linkAvailable: root.canvasItemUrl(modelData) !== ""
+                  foreground: root.foreground
+                  muted: root.dim
+                  accent: root.urgent
+                  fontFamily: root.fontFamily
+                  onActivated: root.openAssignment(modelData)
+                }
+                PanelSeparator {
+                  visible: index < root.selectedCourseSubmittedAssignments.length - 1
                   width: parent.width
                   foreground: root.foreground
                   opacity: 0.18

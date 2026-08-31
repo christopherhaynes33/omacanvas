@@ -132,6 +132,12 @@ Student assignments use one compact status icon:
 - A checkmark means Canvas reports the assignment as submitted.
 - A lock means Canvas reports the assignment as locked for the current user.
 
+On the student **Assignments** and **Courses** views, submitted assignments are
+grouped under a collapsed disclosure below the open assignments. Select the
+disclosure to review them; its expanded or collapsed state is shared between
+the two views until the panel is closed. Teaching assignments are not grouped
+this way. The Overview's **Next** line also skips submitted student work.
+
 Locked student assignments show their future unlock date when Canvas provides
 one. If Canvas reports the assignment as locked without a future unlock date,
 Omacanvas displays **Locked · No scheduled unlock date**. Lock and submission
