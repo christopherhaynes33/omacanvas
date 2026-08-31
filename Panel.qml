@@ -493,11 +493,14 @@ Panel {
         boundsBehavior: Flickable.StopAtBounds
         flickableDirection: Flickable.VerticalFlick
         interactive: contentHeight > height
-        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+        ScrollBar.vertical: ScrollBar {
+          id: panelScrollBar
+          policy: ScrollBar.AsNeeded
+        }
 
         Column {
           id: content
-          width: panelFlick.width
+          width: panelFlick.width - panelScrollBar.implicitWidth - Style.space(4)
           spacing: Style.space(12)
 
           Item {
