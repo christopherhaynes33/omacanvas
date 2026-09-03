@@ -20,8 +20,9 @@ The panel provides three views:
 
 - A current Omarchy installation using the standard Quickshell bar.
 - Python 3.10 or newer.
-- `secret-tool`, provided by the `libsecret` package, for secure token storage.
-- A Canvas account permitted to create personal access tokens.
+- `secret-tool`, provided by the `libsecret` package, for secure credential storage.
+- A Chromium-family browser (Chromium, Chrome, Brave, Edge, or Vivaldi) for
+  browser login, or a Canvas account permitted to create personal access tokens.
 
 Install the keyring tool if it is not already available:
 
@@ -41,10 +42,12 @@ Choose a bar section when prompted. The default section is the right side.
 
 ## Configure Canvas
 
-Omacanvas needs the HTTPS base URL of the Canvas installation and a personal access
-token. The URL is stored in Omarchy's normal widget settings. The token is
-stored in the system keyring and is scoped to that URL, so separate Canvas
-installations can use separate tokens.
+Omacanvas needs the HTTPS base URL of the Canvas installation and either a
+browser session or a personal access token. The URL is stored in Omarchy's
+normal widget settings. Credentials are stored in the system keyring and
+scoped to that configured URL, so separate Canvas installations can use
+separate logins. A browser-login record also contains the validated API origin
+in case Canvas redirects the configured address to a different canonical host.
 
 ### 1. Find the Canvas base URL
 
@@ -63,22 +66,58 @@ the base URL is:
 https://canvas.example.edu
 ```
 
-Set it from **Setup → Plugins → Omacanvas**, or from a terminal:
+Set it with Omarchy's bar command:
 
 ```sh
 omarchy bar set io.github.christopherhaynes33.omacanvas baseUrl https://canvas.example.edu
 ```
 
-### 2. Create a Canvas API token
+### 2. Sign in through the browser
+
+Run the installed helper; it reads the URL from the Omarchy bar setting:
+
+```sh
+~/.config/omarchy/plugins/io.github.christopherhaynes33.omacanvas/omacanvas login
+```
+
+An explicit `--base-url` takes precedence when needed.
+
+Omacanvas opens an isolated browser window. Complete the institution's normal
+Canvas login, including SSO or MFA. Omacanvas follows the HTTPS origins reached
+by the isolated login window and accepts a `canvas_session` cookie only after
+that origin successfully answers Canvas's `/api/v1/users/self` endpoint. It
+stores the validated API base URL alongside the cookie in the desktop keyring,
+then closes the isolated window. It does not read cookies from the normal
+browser profile or retain the temporary profile.
+
+The browser session is used for read-only API requests and takes precedence if
+a personal token is also saved. Session lifetime is controlled by Canvas and
+the institution; run `login` again if Canvas expires it. This login method uses
+Canvas's web session rather than its documented OAuth flow, so an institution
+or future Canvas release may disable it. Personal access tokens remain
+available as a fallback.
+
+If automatic browser detection does not find the desired browser, pass its
+executable explicitly:
+
+```sh
+~/.config/omarchy/plugins/io.github.christopherhaynes33.omacanvas/omacanvas login \
+  --browser /usr/bin/chromium
+```
+
+Right-click the Omacanvas bar icon after login to refresh immediately.
+
+### 3. Optional: create a Canvas API token
 
 > [!IMPORTANT]
 > Instructure documents manual token generation as a testing workflow and
-> requires OAuth for applications used by multiple users. Omacanvas currently
-> supports personal access tokens, not OAuth. Before using one, confirm that
-> your institution permits a manually generated token for a local, personal
-> client. See the [Canvas OAuth2 documentation](https://developerdocs.instructure.com/services/canvas/oauth2/file.oauth).
+> requires OAuth for applications used by multiple users. Omacanvas does not
+> implement OAuth. Before using its optional token fallback, confirm that your
+> institution permits a manually generated token for a local, personal client.
+> See the [Canvas OAuth2 documentation](https://developerdocs.instructure.com/services/canvas/oauth2/file.oauth).
 
-In Canvas:
+If browser login is unavailable or unreliable for the institution, create a
+personal token in Canvas:
 
 1. Open **Account → Settings**.
 2. Find **Approved Integrations**.
@@ -93,19 +132,19 @@ not available, contact the institution's Canvas administrator.
 
 Treat the token like a password.
 
-### 3. Save the token in the keyring
+### 4. Save the optional token in the keyring
 
 Run the installed helper and enter the token at the hidden prompt:
 
 ```sh
-~/.config/omarchy/plugins/io.github.christopherhaynes33.omacanvas/omacanvas set-token \
-  --base-url https://canvas.example.edu
+~/.config/omarchy/plugins/io.github.christopherhaynes33.omacanvas/omacanvas set-token
 ```
 
 The URL must match the configured base URL after trailing slashes are removed.
 Setting a token again replaces the saved token for that Canvas installation.
 
-Right-click the Omacanvas bar icon after configuration to refresh immediately.
+If a browser session is also saved, it remains preferred. Run `clear-session`
+to switch back to the token.
 
 ## Use the widget
 
@@ -169,8 +208,7 @@ ${XDG_CONFIG_HOME:-~/.config}/omacanvas/hidden-courses.json
 
 ## Settings
 
-Settings are available under **Setup → Plugins → Omacanvas** or through
-`omarchy bar set`:
+Settings are managed through `omarchy bar set`:
 
 ```sh
 # Change the assignment window to 21 days.
@@ -179,27 +217,40 @@ omarchy bar set io.github.christopherhaynes33.omacanvas days 21 --json
 # Change automatic refresh to every three hours.
 omarchy bar set io.github.christopherhaynes33.omacanvas refreshIntervalSec 10800 --json
 
-# Change Canvas installations. Save a token for the new URL separately.
+# Change Canvas installations. Sign in or save a token for the new URL separately.
 omarchy bar set io.github.christopherhaynes33.omacanvas baseUrl https://other.example.edu
 ```
 
 The assignment window accepts 1–60 days. The refresh interval accepts
 300–86400 seconds.
 
-## Manage API tokens
+## Manage credentials
+
+Open an isolated browser and save its validated Canvas session:
+
+```sh
+~/.config/omarchy/plugins/io.github.christopherhaynes33.omacanvas/omacanvas login
+```
+
+Remove the locally saved browser session:
+
+```sh
+~/.config/omarchy/plugins/io.github.christopherhaynes33.omacanvas/omacanvas clear-session
+```
+
+This removes Omacanvas's keyring copy; it does not sign other browsers out of
+Canvas.
 
 Replace or add a token:
 
 ```sh
-~/.config/omarchy/plugins/io.github.christopherhaynes33.omacanvas/omacanvas set-token \
-  --base-url https://canvas.example.edu
+~/.config/omarchy/plugins/io.github.christopherhaynes33.omacanvas/omacanvas set-token
 ```
 
 Remove the token for one Canvas installation:
 
 ```sh
-~/.config/omarchy/plugins/io.github.christopherhaynes33.omacanvas/omacanvas clear-token \
-  --base-url https://canvas.example.edu
+~/.config/omarchy/plugins/io.github.christopherhaynes33.omacanvas/omacanvas clear-token
 ```
 
 For temporary terminal use, explicitly select `CANVAS_API_KEY` instead of the
@@ -222,10 +273,12 @@ The helper can also be run independently:
 ```sh
 OMACANVAS=~/.config/omarchy/plugins/io.github.christopherhaynes33.omacanvas/omacanvas
 
-$OMACANVAS fetch --base-url https://canvas.example.edu
-$OMACANVAS fetch --json --base-url https://canvas.example.edu
-$OMACANVAS set-token --base-url https://canvas.example.edu
-$OMACANVAS clear-token --base-url https://canvas.example.edu
+$OMACANVAS fetch
+$OMACANVAS fetch --json
+$OMACANVAS login
+$OMACANVAS clear-session
+$OMACANVAS set-token
+$OMACANVAS clear-token
 $OMACANVAS hide-course COURSE_ID --base-url https://canvas.example.edu \
   --course-name 'Orientation' --course-code 'ORIENT'
 $OMACANVAS unhide-course COURSE_ID --base-url https://canvas.example.edu
@@ -256,9 +309,9 @@ Remove the plugin:
 omarchy plugin remove io.github.christopherhaynes33.omacanvas
 ```
 
-Removing the plugin does not remove tokens from the system keyring or the
-hidden-course preferences. Use `clear-token` before removal and delete the
-Omacanvas configuration directory manually if those should also be removed.
+Removing the plugin does not remove browser sessions, tokens, or hidden-course
+preferences. Use `clear-session` and `clear-token` before removal and delete
+the Omacanvas configuration directory manually if those should also be removed.
 
 ## Privacy and permissions
 
@@ -269,20 +322,29 @@ status, and assignments due within the selected window. Assignment data
 includes publication status and Canvas availability dates needed to display
 lock and unlock information. Teacher data is read-only; Omacanvas does not
 retrieve individual submissions or change grades. Hidden courses skip
-assignment requests. The token is read from the desktop keyring and is never
-written to Omarchy's plain-text configuration. Assignment and course links are
-opened in the default browser only after Omacanvas verifies that they use the
-configured Canvas origin; the API token is not included in browser links.
+assignment requests. The selected credential is read from the desktop keyring
+and is never written to Omarchy's plain-text configuration. Browser login uses
+a new private temporary browser profile and asks Chromium only for cookies
+applicable to HTTPS origins reached during login. Only a validated
+`canvas_session` value and its Canvas API base URL are retained. Assignment and
+course links are opened in the default browser only after Omacanvas verifies
+that they use the validated Canvas origin; credentials are not included in
+browser links.
 
 Like every Omarchy shell plugin, Omacanvas runs as user code inside the shell.
 Review third-party plugin source before installation.
 
 ## Troubleshooting
 
-- **“Set your Canvas URL”** — configure `baseUrl` using the command above or
-  **Setup → Plugins → Omacanvas**.
-- **“No Canvas API token is saved”** — run `set-token` with the exact same base
-  URL configured for the widget.
+- **“Set your Canvas URL”** — configure `baseUrl` with the `omarchy bar set`
+  command above.
+- **“No Canvas credential is saved”** — run `login` or `set-token` with the
+  exact same base URL configured for the widget.
+- **Canvas rejected the browser session** — Canvas expired or revoked the web
+  session; run `login` again.
+- **The browser closes before login completes** — rerun `login`, optionally
+  with `--browser /path/to/chromium`, and keep the isolated window open through
+  the Canvas dashboard redirect.
 - **`secret-tool` is missing** — install `libsecret` with
   `omarchy pkg add libsecret`.
 - **Canvas rejected the API token** — create a new token in Canvas and run
@@ -309,7 +371,10 @@ python3 -m unittest discover -s tests
 omarchy plugin add "$(pwd)" --enable
 ```
 
-The helper uses only Python's standard library.
+The helper uses only Python's standard library. Browser login communicates
+with a locally launched Chromium-family browser through a process-private
+DevTools pipe; no listening port, browser automation package, or extension is
+required.
 
 ## License
 
