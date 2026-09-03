@@ -31,6 +31,42 @@ class FakeClient:
                 {"id": 3, "name": "Too late", "due_at": "2026-09-20T15:00:00Z", "submission": {}}]
 
 
+class AnnouncementClient:
+    base_url = "https://canvas.test/"
+
+    def __init__(self, topics=None, error=None, conversations=None,
+                 conversation_error=None, discussions=None,
+                 discussion_error=None):
+        self.topics = topics if topics is not None else []
+        self.error = error
+        self.conversation_records = conversations if conversations is not None else []
+        self.conversation_error = conversation_error
+        self.discussion_records = discussions if discussions is not None else []
+        self.discussion_error = discussion_error
+        self.requested_paths = []
+        self.requested_params = []
+
+    def get_all(self, path, params=None):
+        self.requested_paths.append(path)
+        self.requested_params.append(params)
+        if path == "api/v1/courses":
+            return [{"id": 7, "name": "Biology", "course_code": "BIO101",
+                     "enrollments": [{"type": "student"}]}]
+        if path == "api/v1/courses/7/discussion_topics":
+            if (params or {}).get("only_announcements") == "true":
+                if self.error is not None:
+                    raise self.error
+                return self.topics
+            if self.discussion_error is not None:
+                raise self.discussion_error
+            return self.discussion_records
+        if path == "api/v1/conversations":
+            if self.conversation_error is not None:
+                raise self.conversation_error
+            return self.conversation_records
+        return []
+
+
 class MixedRoleClient:
     base_url = "https://canvas.test/"
 
@@ -273,7 +309,7 @@ class CanvasTests(unittest.TestCase):
     def test_collects_only_assignments_in_window(self):
         data = module.collect(FakeClient(), 14, datetime(2026, 8, 27, tzinfo=timezone.utc))
         student = data["roles"]["student"]
-        self.assertEqual(data["schema_version"], 2)
+        self.assertEqual(data["schema_version"], 5)
         self.assertEqual(len(student["courses"]), 1)
         self.assertEqual([a["name"] for a in student["courses"][0]["assignments"]], ["In range"])
         self.assertEqual(
@@ -433,7 +469,11 @@ class CanvasTests(unittest.TestCase):
             ["Course I Teach"],
         )
         self.assertEqual(client.requested_params[0]["enrollment_type"], "student")
-        self.assertEqual(client.requested_params[2]["enrollment_type"], "teacher")
+        teacher_courses_params = next(
+            params for path, params in zip(client.requested_paths, client.requested_params)
+            if path == "api/v1/courses" and params.get("enrollment_type") == "teacher"
+        )
+        self.assertEqual(teacher_courses_params["enrollment_type"], "teacher")
         self.assertIn("api/v1/courses/10/assignments", client.requested_paths)
         self.assertIn("api/v1/courses/20/assignments", client.requested_paths)
 
@@ -496,6 +536,230 @@ class CanvasTests(unittest.TestCase):
 
             with self.assertRaisesRegex(RuntimeError, "symbolic link"):
                 module.hidden_courses_for("https://canvas.example.edu", path)
+
+    def test_collects_all_announcements_newest_first(self):
+        topics = [
+            {"id": 1, "title": "Old news", "posted_at": "2026-08-01T10:00:00Z",
+             "message": "<p>First.</p>",
+             "author": {"display_name": "Instructor"},
+             "html_url": "https://canvas.test/courses/7/discussion_topics/1"},
+            {"id": 2, "title": "Newer news", "posted_at": "2026-08-20T10:00:00Z",
+             "message": "Second",
+             "author": {"display_name": "Instructor"},
+             "html_url": "https://canvas.test/courses/7/discussion_topics/2"},
+            {"id": 3, "title": "Newest news", "posted_at": "2026-08-25T10:00:00Z",
+             "message": "Third",
+             "author": {"display_name": "Instructor"},
+             "html_url": "https://canvas.test/courses/7/discussion_topics/3"},
+            {"id": 4, "title": "Middle news", "posted_at": "2026-08-10T10:00:00Z",
+             "message": "Fourth",
+             "author": {"display_name": "Instructor"},
+             "html_url": "https://canvas.test/courses/7/discussion_topics/4"},
+            {"id": 5, "title": "Undated news",
+             "message": "Fifth",
+             "author": {"display_name": "Instructor"},
+             "html_url": "https://canvas.test/courses/7/discussion_topics/5"},
+        ]
+        client = AnnouncementClient(topics=topics)
+        data = module.collect(client, 14, datetime(2026, 8, 27, tzinfo=timezone.utc))
+        announcements = data["roles"]["student"]["courses"][0]["announcements"]
+        self.assertEqual(
+            [item["title"] for item in announcements],
+            ["Newest news", "Newer news", "Middle news", "Old news", "Undated news"],
+        )
+        self.assertEqual(
+            announcements[0]["posted_at"], "2026-08-25T10:00:00+00:00",
+        )
+        self.assertEqual(announcements[0]["author"], "Instructor")
+        self.assertEqual(announcements[0]["excerpt"], "Third")
+        self.assertEqual(
+            announcements[0]["html_url"],
+            "https://canvas.test/courses/7/discussion_topics/3",
+        )
+        announcement_request = next(
+            params for path, params in zip(client.requested_paths, client.requested_params)
+            if path == "api/v1/courses/7/discussion_topics"
+        )
+        self.assertEqual(announcement_request["only_announcements"], "true")
+
+    def test_announcement_excerpt_strips_markup_and_truncates(self):
+        self.assertEqual(
+            module.plain_text_excerpt("<p>Hello <b>world</b></p>"),
+            "Hello world",
+        )
+        self.assertEqual(module.plain_text_excerpt(None), "")
+        long_text = "word " * 100
+        excerpt = module.plain_text_excerpt(long_text)
+        self.assertLessEqual(len(excerpt), module.ANNOUNCEMENT_EXCERPT_LENGTH)
+        self.assertTrue(excerpt.endswith("…"))
+
+    def test_announcement_with_external_url_is_not_linkable(self):
+        client = AnnouncementClient(topics=[
+            {"id": 9, "title": "External", "posted_at": "2026-08-25T10:00:00Z",
+             "message": "Body", "author": {"display_name": "Instructor"},
+             "html_url": "https://attacker.example/collect"},
+        ])
+        data = module.collect(client, 14, datetime(2026, 8, 27, tzinfo=timezone.utc))
+        announcements = data["roles"]["student"]["courses"][0]["announcements"]
+        self.assertEqual(len(announcements), 1)
+        self.assertIsNone(announcements[0]["html_url"])
+
+    def test_announcement_permission_failure_yields_empty_list(self):
+        client = AnnouncementClient(error=module.CanvasPermissionError("denied"))
+        data = module.collect(client, 14, datetime(2026, 8, 27, tzinfo=timezone.utc))
+        course = data["roles"]["student"]["courses"][0]
+        self.assertEqual(course["announcements"], [])
+        self.assertEqual(data["roles"]["student"]["error"], "")
+
+    def test_hidden_course_skips_announcement_request(self):
+        client = AnnouncementClient(topics=[
+            {"id": 1, "title": "News", "posted_at": "2026-08-25T10:00:00Z",
+             "message": "Body", "author": {},
+             "html_url": "https://canvas.test/courses/7/discussion_topics/1"},
+        ])
+        data = module.collect(
+            client, 14, datetime(2026, 8, 27, tzinfo=timezone.utc),
+            hidden_course_ids={"7"},
+        )
+        self.assertEqual(data["roles"]["student"]["courses"], [])
+        self.assertNotIn(
+            "api/v1/courses/7/discussion_topics", client.requested_paths,
+        )
+
+    def test_collects_all_conversations_for_course_newest_first(self):
+        records = [
+            {"id": 11, "subject": "Old thread", "workflow_state": "read",
+             "last_message": "First", "last_message_at": "2026-08-01T10:00:00Z",
+             "message_count": 2, "starred": False,
+             "participants": [{"id": 5, "name": "Instructor"}],
+             "context_name": "Biology"},
+            {"id": 12, "subject": "New question", "workflow_state": "unread",
+             "last_message": "<p>Second</p>", "last_message_at": "2026-08-25T10:00:00Z",
+             "message_count": 1, "starred": True,
+             "participants": [{"id": 5, "name": "Instructor"}],
+             "context_name": "Biology"},
+            {"id": 13, "subject": "Middle thread", "workflow_state": "unread",
+             "last_message": "Third", "last_message_at": "2026-08-10T10:00:00Z",
+             "message_count": 4, "starred": False,
+             "participants": [{"id": 5, "name": "Instructor"}],
+             "context_name": "Biology"},
+        ]
+        client = AnnouncementClient(conversations=records)
+        data = module.collect(client, 14, datetime(2026, 8, 27, tzinfo=timezone.utc))
+        conversations = data["roles"]["student"]["courses"][0]["conversations"]
+        self.assertEqual(
+            [item["subject"] for item in conversations],
+            ["New question", "Middle thread", "Old thread"],
+        )
+        newest = conversations[0]
+        self.assertTrue(newest["unread"])
+        self.assertEqual(newest["last_message"], "Second")
+        self.assertEqual(
+            newest["last_message_at"], "2026-08-25T10:00:00+00:00",
+        )
+        self.assertTrue(newest["starred"])
+        self.assertEqual(newest["participants"], [{"id": 5, "name": "Instructor"}])
+        self.assertEqual(newest["html_url"], "https://canvas.test/conversations")
+        self.assertFalse(conversations[2]["unread"])
+        conversation_request = next(
+            params for path, params in zip(client.requested_paths, client.requested_params)
+            if path == "api/v1/conversations"
+        )
+        self.assertEqual(conversation_request["filter"], "course_7")
+
+    def test_conversation_permission_failure_yields_empty_list(self):
+        client = AnnouncementClient(
+            conversation_error=module.CanvasPermissionError("denied"),
+        )
+        data = module.collect(client, 14, datetime(2026, 8, 27, tzinfo=timezone.utc))
+        course = data["roles"]["student"]["courses"][0]
+        self.assertEqual(course["conversations"], [])
+        self.assertEqual(data["roles"]["student"]["error"], "")
+
+    def test_hidden_course_skips_conversation_request(self):
+        client = AnnouncementClient(conversations=[
+            {"id": 12, "subject": "New question", "workflow_state": "unread",
+             "last_message": "Hi", "last_message_at": "2026-08-25T10:00:00Z",
+             "message_count": 1, "starred": False,
+             "participants": [], "context_name": "Biology"},
+        ])
+        data = module.collect(
+            client, 14, datetime(2026, 8, 27, tzinfo=timezone.utc),
+            hidden_course_ids={"7"},
+        )
+        self.assertEqual(data["roles"]["student"]["courses"], [])
+        self.assertNotIn("api/v1/conversations", client.requested_paths)
+
+    def test_collects_all_discussions_most_active_first(self):
+        records = [
+            {"id": 21, "title": "Quiet thread", "posted_at": "2026-08-01T10:00:00Z",
+             "last_reply_at": "2026-08-02T10:00:00Z",
+             "message": "First", "author": {"display_name": "Student"},
+             "discussion_subentry_count": 1, "pinned": False, "locked": False,
+             "html_url": "https://canvas.test/courses/7/discussion_topics/21"},
+            {"id": 22, "title": "Hot thread", "posted_at": "2026-08-05T10:00:00Z",
+             "last_reply_at": "2026-08-25T10:00:00Z",
+             "message": "<p>Second</p>", "author": {"display_name": "Instructor"},
+             "discussion_subentry_count": 12, "pinned": True, "locked": False,
+             "html_url": "https://canvas.test/courses/7/discussion_topics/22"},
+            {"id": 23, "title": "Locked thread", "posted_at": "2026-08-10T10:00:00Z",
+             "message": "Third", "author": {"display_name": "Instructor"},
+             "discussion_subentry_count": 0, "pinned": False, "locked": True,
+             "html_url": "https://attacker.example/collect"},
+        ]
+        client = AnnouncementClient(discussions=records)
+        data = module.collect(client, 14, datetime(2026, 8, 27, tzinfo=timezone.utc))
+        discussions = data["roles"]["student"]["courses"][0]["discussions"]
+        self.assertEqual(
+            [item["title"] for item in discussions],
+            ["Hot thread", "Locked thread", "Quiet thread"],
+        )
+        hot = discussions[0]
+        self.assertEqual(hot["last_activity_at"], "2026-08-25T10:00:00+00:00")
+        self.assertEqual(hot["reply_count"], 12)
+        self.assertTrue(hot["pinned"])
+        self.assertFalse(hot["locked"])
+        self.assertEqual(hot["excerpt"], "Second")
+        self.assertEqual(
+            hot["html_url"],
+            "https://canvas.test/courses/7/discussion_topics/22",
+        )
+        self.assertTrue(discussions[1]["locked"])
+        self.assertIsNone(discussions[1]["html_url"])
+        discussion_request = next(
+            params for path, params in zip(client.requested_paths, client.requested_params)
+            if path == "api/v1/courses/7/discussion_topics"
+            and params.get("only_announcements") != "true"
+        )
+        self.assertEqual(discussion_request["order_by"], "recent_activity")
+
+    def test_discussion_permission_failure_yields_empty_list(self):
+        client = AnnouncementClient(
+            discussion_error=module.CanvasPermissionError("denied"),
+        )
+        data = module.collect(client, 14, datetime(2026, 8, 27, tzinfo=timezone.utc))
+        course = data["roles"]["student"]["courses"][0]
+        self.assertEqual(course["discussions"], [])
+        self.assertEqual(data["roles"]["student"]["error"], "")
+
+    def test_hidden_course_skips_discussion_request(self):
+        client = AnnouncementClient(discussions=[
+            {"id": 21, "title": "Thread", "posted_at": "2026-08-25T10:00:00Z",
+             "message": "Body", "author": {},
+             "discussion_subentry_count": 3, "pinned": False, "locked": False,
+             "html_url": "https://canvas.test/courses/7/discussion_topics/21"},
+        ])
+        data = module.collect(
+            client, 14, datetime(2026, 8, 27, tzinfo=timezone.utc),
+            hidden_course_ids={"7"},
+        )
+        self.assertEqual(data["roles"]["student"]["courses"], [])
+        discussion_requests = [
+            params for path, params in zip(client.requested_paths, client.requested_params)
+            if path == "api/v1/courses/7/discussion_topics"
+            and (params or {}).get("only_announcements") != "true"
+        ]
+        self.assertEqual(discussion_requests, [])
 
 
 if __name__ == "__main__":
