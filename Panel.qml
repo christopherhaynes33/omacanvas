@@ -19,7 +19,7 @@ Panel {
     String(Qt.resolvedUrl(".")).replace(/^file:\/\//, "").replace(/\/$/, ""))
   readonly property string helperPath: pluginDir + "/omacanvas"
   readonly property string baseUrl: String(setting("baseUrl", "")).trim()
-  readonly property string configurationMessage: "Set your Canvas URL in Setup › Plugins › Omacanvas, then save an API token for that URL."
+  readonly property string configurationMessage: "Set your Canvas URL with omarchy bar set, then run the helper's login command or save an API token."
   readonly property int days: boundedSetting("days", 14, 1, 60)
   readonly property int refreshSec: boundedSetting("refreshIntervalSec", 21600, 300, 86400)
 

@@ -122,8 +122,10 @@ class FakeResponse:
 class FakeOpener:
     def __init__(self, *responses):
         self.responses = list(responses)
+        self.requests = []
 
-    def open(self, _request, timeout=None):
+    def open(self, request, timeout=None):
+        self.requests.append(request)
         if not self.responses:
             raise AssertionError("Unexpected API request")
         return self.responses.pop(0)
@@ -158,6 +160,57 @@ class CanvasTests(unittest.TestCase):
         ):
             with self.subTest(value=value), self.assertRaises(RuntimeError):
                 module.normalize_instance_url(value)
+
+    def test_reads_canvas_base_url_from_omarchy_bar_setting(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "shell.json"
+            path.write_text(module.json.dumps({
+                "bar": {
+                    "layout": {
+                        "left": [],
+                        "center": [],
+                        "right": [{
+                            "id": "io.github.christopherhaynes33.omacanvas",
+                            "baseUrl": "https://Canvas.Example.EDU/",
+                        }],
+                    },
+                },
+            }), encoding="utf-8")
+
+            self.assertEqual(
+                module.configured_canvas_base_url(path),
+                "https://canvas.example.edu",
+            )
+
+    def test_resolves_configured_canvas_base_url_when_no_override_exists(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "shell.json"
+            path.write_text(module.json.dumps({
+                "bar": {"layout": {"right": [{
+                    "id": "io.github.christopherhaynes33.omacanvas",
+                    "baseUrl": "https://canvas.example.edu",
+                }]}},
+            }), encoding="utf-8")
+            with patch.dict(os.environ, {"CANVAS_BASE_URL": ""}):
+                self.assertEqual(
+                    module.resolve_base_url(config_path=path),
+                    "https://canvas.example.edu",
+                )
+
+    def test_explicit_canvas_base_url_precedes_environment_and_bar_setting(self):
+        with patch.dict(os.environ, {"CANVAS_BASE_URL": "https://environment.example"}):
+            self.assertEqual(
+                module.resolve_base_url(
+                    "https://argument.example", Path("/does/not/need/to/exist"),
+                ),
+                "https://argument.example",
+            )
+
+    def test_missing_configured_canvas_base_url_has_actionable_error(self):
+        with TemporaryDirectory() as directory, \
+             patch.dict(os.environ, {"CANVAS_BASE_URL": ""}):
+            with self.assertRaisesRegex(RuntimeError, "omarchy bar set"):
+                module.resolve_base_url(config_path=Path(directory) / "missing.json")
 
     def test_sanitizes_canvas_text_for_ui_and_terminal_output(self):
         self.assertEqual(
@@ -269,6 +322,211 @@ class CanvasTests(unittest.TestCase):
              patch.object(module.subprocess, "run", side_effect=failure):
             with self.assertRaisesRegex(RuntimeError, "Could not remove"):
                 module.clear_token("https://canvas.example.edu")
+
+    def test_browser_session_keyring_is_separate_and_scoped_to_canvas_url(self):
+        completed = Mock(stdout="browser-session\n")
+        with patch.object(module, "secret_tool_path", return_value="/usr/bin/secret-tool"), \
+             patch.object(module.subprocess, "run", return_value=completed) as run:
+            self.assertEqual(
+                module._keyring_browser_session("https://canvas.example.edu/"),
+                module.BrowserSession(
+                    "https://canvas.example.edu", "browser-session",
+                ),
+            )
+            self.assertEqual(
+                run.call_args.args[0],
+                ["/usr/bin/secret-tool", "lookup", "service",
+                 "omacanvas-browser-session", "base_url", "https://canvas.example.edu"],
+            )
+
+    def test_saves_browser_session_and_validated_api_base_url_in_keyring(self):
+        with patch.object(module, "secret_tool_path", return_value="/usr/bin/secret-tool"), \
+             patch.object(module.subprocess, "run") as run:
+            module.save_browser_session(
+                "https://canvas.example.edu/", "signed-session-value",
+                "https://school.instructure.com/",
+            )
+            self.assertEqual(
+                run.call_args.args[0],
+                ["/usr/bin/secret-tool", "store",
+                 "--label=Omacanvas browser session (school.instructure.com)",
+                 "service", "omacanvas-browser-session", "base_url",
+                 "https://canvas.example.edu"],
+            )
+            self.assertEqual(
+                module.json.loads(run.call_args.kwargs["input"]),
+                {
+                    "version": 1,
+                    "base_url": "https://school.instructure.com",
+                    "canvas_session": "signed-session-value",
+                },
+            )
+
+    def test_reads_versioned_browser_session_with_stored_base_url(self):
+        value = module.json.dumps({
+            "version": 1,
+            "base_url": "https://school.instructure.com/",
+            "canvas_session": "signed-session",
+        })
+        self.assertEqual(
+            module._decode_browser_session(value, "https://canvas.example.edu"),
+            module.BrowserSession(
+                "https://school.instructure.com", "signed-session",
+            ),
+        )
+
+    def test_reads_legacy_bare_browser_session_with_lookup_base_url(self):
+        self.assertEqual(
+            module._decode_browser_session(
+                "legacy-session", "https://canvas.example.edu/",
+            ),
+            module.BrowserSession(
+                "https://canvas.example.edu", "legacy-session",
+            ),
+        )
+
+    def test_rejects_unsafe_browser_session_value(self):
+        for value in ("", "value; another=cookie", "value\r\nInjected: header"):
+            with self.subTest(value=value), self.assertRaisesRegex(RuntimeError, "invalid"):
+                module._validate_browser_session(value)
+
+    def test_browser_session_takes_precedence_over_saved_token(self):
+        with patch.object(
+            module,
+            "_keyring_browser_session",
+            return_value=module.BrowserSession(
+                "https://canvas.example.edu", "session",
+            ),
+        ), \
+             patch.object(module, "get_token", return_value="token") as get_token:
+            self.assertEqual(
+                module.get_credential("https://canvas.example.edu"),
+                ("browser_session", "session", "https://canvas.example.edu"),
+            )
+            get_token.assert_not_called()
+
+    def test_environment_token_explicitly_overrides_browser_session(self):
+        with patch.object(module, "_keyring_browser_session") as browser_session, \
+             patch.object(module, "get_token", return_value="environment-token"):
+            self.assertEqual(
+                module.get_credential(
+                    "https://canvas.example.edu", token_from_environment=True,
+                ),
+                ("token", "environment-token", "https://canvas.example.edu"),
+            )
+            browser_session.assert_not_called()
+
+    def test_browser_credential_uses_stored_api_base_url(self):
+        with patch.object(
+            module,
+            "_keyring_browser_session",
+            return_value=module.BrowserSession(
+                "https://school.instructure.com", "session",
+            ),
+        ):
+            self.assertEqual(
+                module.get_credential("https://canvas.example.edu"),
+                ("browser_session", "session", "https://school.instructure.com"),
+            )
+
+    def test_collects_https_origins_from_browser_pages(self):
+        targets = [
+            {"type": "page", "url": "https://login.example.edu/sso"},
+            {"type": "page", "url": "https://school.instructure.com/dashboard"},
+            {"type": "worker", "url": "https://ignored.example/worker.js"},
+            {"type": "page", "url": "http://insecure.example/dashboard"},
+        ]
+        self.assertEqual(
+            module._browser_target_origins(
+                targets, "https://canvas.example.edu/",
+            ),
+            [
+                "https://canvas.example.edu",
+                "https://login.example.edu",
+                "https://school.instructure.com",
+            ],
+        )
+
+    def test_selects_only_applicable_secure_canvas_session_cookie(self):
+        cookies = [
+            {"name": "canvas_session", "value": "external", "domain": "attacker.test",
+             "path": "/", "secure": True, "expires": -1},
+            {"name": "canvas_session", "value": "expired", "domain": ".example.edu",
+             "path": "/", "secure": True, "expires": 99},
+            {"name": "canvas_session", "value": "parent", "domain": ".example.edu",
+             "path": "/", "secure": True, "expires": -1},
+            {"name": "canvas_session", "value": "exact", "domain": "canvas.example.edu",
+             "path": "/", "secure": True, "expires": -1},
+            {"name": "analytics", "value": "ignored", "domain": "canvas.example.edu",
+             "path": "/", "secure": True, "expires": -1},
+        ]
+        self.assertEqual(
+            module._canvas_session_from_cookies(
+                cookies, "https://canvas.example.edu", now=100,
+            ),
+            "exact",
+        )
+
+    def test_rejects_insecure_canvas_session_cookie(self):
+        self.assertIsNone(module._canvas_session_from_cookies(
+            [{"name": "canvas_session", "value": "session",
+              "domain": "canvas.example.edu", "path": "/", "secure": False}],
+            "https://canvas.example.edu",
+        ))
+
+    def test_devtools_pipe_sends_commands_and_ignores_events(self):
+        response_read, response_write = os.pipe()
+        command_read, command_write = os.pipe()
+        os.write(
+            response_write,
+            b'{"method":"Target.targetCreated"}\0'
+            b'{"id":1,"result":{"cookies":[]}}\0',
+        )
+        os.close(response_write)
+        connection = module.DevToolsPipe(response_read, command_write)
+        try:
+            self.assertEqual(
+                connection.command("Network.getCookies", {"urls": ["https://canvas.test"]}),
+                {"cookies": []},
+            )
+            sent = os.read(command_read, 4096)
+            self.assertTrue(sent.endswith(b"\0"))
+            self.assertEqual(
+                module.json.loads(sent[:-1]),
+                {"id": 1, "method": "Network.getCookies",
+                 "params": {"urls": ["https://canvas.test"]}},
+            )
+        finally:
+            connection.close()
+            os.close(command_read)
+
+    def test_browser_session_client_sends_cookie_without_bearer_token(self):
+        opener = FakeOpener(FakeResponse([]))
+        client = module.CanvasClient(
+            "https://canvas.example.edu", browser_session="signed-session",
+            opener=opener, clock=lambda: 0,
+        )
+
+        client.get_all("api/v1/courses")
+
+        headers = dict(opener.requests[0].header_items())
+        self.assertEqual(headers["Cookie"], "canvas_session=signed-session")
+        self.assertNotIn("Authorization", headers)
+
+    def test_browser_session_authentication_error_is_actionable(self):
+        error = HTTPError(
+            "https://canvas.example.edu/api/v1/courses", 401, "failure", {}, None,
+        )
+        client = module.CanvasClient(
+            "https://school.instructure.com", browser_session="expired-session",
+            login_base_url="https://canvas.example.edu",
+            opener=RaisingOpener(error), clock=lambda: 0,
+        )
+        with self.assertRaisesRegex(
+            module.CanvasAuthenticationError,
+            "login --base-url https://canvas.example.edu",
+        ):
+            client.get_all("api/v1/courses")
 
     def test_collects_only_assignments_in_window(self):
         data = module.collect(FakeClient(), 14, datetime(2026, 8, 27, tzinfo=timezone.utc))
